@@ -14,6 +14,7 @@ using OpenUtau.Core;
 using OpenUtau.Core.Ustx;
 using OpenUtau.Core.Util;
 using ReactiveUI;
+using ReactiveUI.Primitives;
 using Serilog;
 using SharpCompress;
 
@@ -128,7 +129,7 @@ foreach (var box in this.GetLogicalDescendants().OfType<TextBox>()) {
                 textBoxValue = text.Text ?? string.Empty;
             }
         }
-        void OnTextBoxLostFocus(object? sender, RoutedEventArgs args) {
+        void OnTextBoxLostFocus(object? sender, FocusChangedEventArgs args) {
             Log.Debug("Note property textbox lost focus");
             if (sender is TextBox textBox && textBoxValue != textBox.Text && textBox.Tag is string tag && !string.IsNullOrEmpty(tag)) {
                 DocManager.Inst.StartUndoGroup("command.property.edit");

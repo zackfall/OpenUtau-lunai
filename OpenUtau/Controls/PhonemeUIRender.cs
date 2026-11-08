@@ -1,5 +1,3 @@
-using System;
-using Avalonia;
 using Avalonia.Media.TextFormatting;
 using OpenUtau.App.ViewModels;
 using OpenUtau.Core;
@@ -9,8 +7,6 @@ using OpenUtau.Core.Util;
 
 namespace OpenUtau.App.Controls {
     static class PhonemeUIRender {
-
-        public static string getLangCode(UVoicePart part){
             int trackNo = part.trackNo;
             var track = DocManager.Inst.Project.tracks[trackNo];
             string langCode = "";
@@ -104,20 +100,15 @@ namespace OpenUtau.App.Controls {
         //Calculates the position of a phoneme alias on a piano roll view, 
         //considering factors like tick width, phoneme text, and text layout. 
         //It returns the x-coordinate and text y-coordinate of the alias
-        public static (double textX, double textY, Size size, TextLayout textLayout) 
-            AliasPosition(NotesViewModel viewModel, UPhoneme phoneme, string? langCode, ref double lastTextEndX, ref bool raiseText){
+        public static (double textX, double textY, Size size, TextLayout textLayout)
+            AliasPosition(NotesViewModel viewModel, UPhoneme phoneme, string? langCode, ref double lastTextEndX, ref bool raiseText) {
 
             string phonemeText = !string.IsNullOrEmpty(phoneme.phonemeMapped) ? phoneme.phonemeMapped : phoneme.phoneme;
-            var track = TrackForPart(viewModel.Part);
-            if (ShouldHideLangPrefixForDisplay(track) && !string.IsNullOrEmpty(langCode)) {
-                var prefix = langCode + "/";
-                if (phonemeText.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) {
-                    phonemeText = phonemeText.Substring(prefix.Length);
-                }
             }
             var x = viewModel.TickToneToPoint(phoneme.position, 0).X;
             var bold = phoneme.phoneme != phoneme.rawPhoneme;
-            var textLayout = TextLayoutCache.Get(phonemeText, ThemeManager.ForegroundBrush!, 12, bold);
+            var textLayout = TextLayoutCache.Get(phonemeText, ThemeManager.ForegroundBrush!, 12, bold,
+                useUiFont: Preferences.Default.UseUiFontForNotes);
             if (x < lastTextEndX) {
                 raiseText = !raiseText;
             } else {

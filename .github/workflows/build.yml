@@ -1,32 +1,52 @@
 on:
+  schedule:
+    # Daily alpha build. Skipped if master has no new commits since the
+    # last alpha release (see the next-version job below).
+    - cron: '0 12 * * *'
   workflow_dispatch:
     inputs:
+      channel:
+        description: "Release channel"
+        type: choice
+        default: alpha
+        options:
+          - stable
+          - beta
+          - alpha
       version:
-        description: "Version"
-        default: "0.0.0"
-        required: true
+        description: "Version (required for stable/beta, ignored for alpha)"
+        default: ""
+        required: false
         type: string
       release:
         type: boolean
         default: false
         description: "Release"
-      beta:
-        type: boolean
-        default: true
-        description: "Beta"
       draft:
         type: boolean
         default: true
         description: "Draft"
 
+<<<<<<< HEAD
 # DEPRECATED: Windows packaging here still uses NSIS + NetSparkle appcasts.
 # The app now uses Velopack (see .github/workflows/release-lunai.yml).
 # Do not publish releases from this workflow -- users would get an installer
 # that cannot update via Help -> Check for Update.
 env:
   release-name: ${{ inputs.version }}${{ inputs.beta && ' Beta' || '' }}
+||||||| 29e0e16d
+env:
+  release-name: ${{ inputs.version }}${{ inputs.beta && ' Beta' || '' }}
+=======
+# Keep same-trigger-type runs from overlapping, e.g. a slow scheduled build
+# still running when the next day's cron fires.
+concurrency:
+  group: release-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+>>>>>>> upstream/master
 
 jobs:
+<<<<<<< HEAD
   guard:
     runs-on: ubuntu-latest
     steps:
@@ -36,8 +56,89 @@ jobs:
           echo "build.yml still contains legacy NSIS/appcast steps and must not ship Windows installers after the Velopack migration."
           exit 1
 
+||||||| 29e0e16d
+=======
+  next-version:
+    runs-on: ubuntu-latest
+    outputs:
+      channel: ${{ steps.nv.outputs.channel }}
+      version: ${{ steps.nv.outputs.version }}
+      tag: ${{ steps.nv.outputs.tag }}
+      name: ${{ steps.nv.outputs.name }}
+      release: ${{ steps.nv.outputs.release }}
+      draft: ${{ steps.nv.outputs.draft }}
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - id: check
+        # Scheduled runs skip the build entirely when master hasn't moved
+        # since the last alpha release, so a quiet day publishes nothing.
+        if: github.event_name == 'schedule'
+        run: |
+          latest_tag=$(git tag --list '*-alpha' | sort -V | tail -1)
+          if [ -z "$latest_tag" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
+            last_sha=$(git rev-list -n 1 "$latest_tag")
+            head_sha=$(git rev-parse HEAD)
+            if [ "$last_sha" = "$head_sha" ]; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+      - id: nv
+        if: steps.check.outputs.skip != 'true'
+        env:
+          # Scheduled runs always build and publish an alpha release.
+          EVENT: ${{ github.event_name }}
+          CHANNEL: ${{ github.event_name == 'schedule' && 'alpha' || inputs.channel }}
+          VERSION: ${{ inputs.version }}
+          RELEASE: ${{ github.event_name == 'schedule' && 'true' || inputs.release }}
+          DRAFT: ${{ github.event_name == 'schedule' && 'false' || inputs.draft }}
+        run: |
+          set -u
+          # Alpha is the only auto-versioned channel; stable and beta take
+          # the version from the dispatch input.
+          if [ "$CHANNEL" = alpha ]; then
+            git ls-remote --tags origin > tags.txt
+            version=$(python .github/scripts/next-version.py < tags.txt)
+            tag="$version-alpha"
+            name="$version Alpha"
+          else
+            if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+[.][0-9]+[.][0-9]+$'; then
+              echo "::error::version must be X.Y.Z for the $CHANNEL channel (got '$VERSION')"
+              exit 1
+            fi
+            version="$VERSION"
+            if [ "$CHANNEL" = beta ]; then
+              tag="$version-beta"
+              name="$version Beta"
+            else
+              tag="$version"
+              name="$version"
+            fi
+          fi
+          {
+            echo "channel=$CHANNEL"
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "name=$name"
+            echo "release=$RELEASE"
+            echo "draft=$DRAFT"
+          } | tee -a "$GITHUB_OUTPUT" >> "$GITHUB_STEP_SUMMARY"
+>>>>>>> upstream/master
   build:
+<<<<<<< HEAD
     if: false # kept for history; enable only after porting to Velopack like release-lunai.yml
+||||||| 29e0e16d
+=======
+    needs: next-version
+    if: needs.next-version.outputs.skip != 'true'
+>>>>>>> upstream/master
     runs-on: ${{ matrix.arch.runs-on }}
 
     strategy:
@@ -56,10 +157,19 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: |
+<<<<<<< HEAD
+||||||| 29e0e16d
+            6.0.x
+            8.0.x
+=======
+            6.0.x
+            8.0.x
+>>>>>>> upstream/master
             10.0.x
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+<<<<<<< HEAD
       - name: Update contributors list
         run: python3 scripts/update-contributors.py
         env:
@@ -76,9 +186,19 @@ jobs:
           Add-Content $env:GITHUB_PATH 'C:\Program Files (x86)\NSIS\Bin'
           Add-Content $env:GITHUB_PATH 'C:\Program Files (x86)\NSIS'
           & 'C:\Program Files (x86)\NSIS\makensis.exe' /VERSION
+||||||| 29e0e16d
+      - name: Install NSIS via Chocolatey
+        run: choco install nsis --version=3.11 --no-progress
+        if: ${{ matrix.arch.os == 'win' }}
+=======
+      - uses: repolevedavaj/install-nsis@v1
+        with:
+          nsis-version: '3.11'
+        if: ${{ matrix.arch.os == 'win' }}
+>>>>>>> upstream/master
       - uses: justalemon/VersionPatcher@v0.7.1
         with:
-          version: ${{ inputs.version }}
+          version: ${{ needs.next-version.outputs.version }}
           csproj-files: "OpenUtau/*.csproj"
 
       # Test
@@ -96,9 +216,33 @@ jobs:
       - name: Build (MacOS)
         run: dotnet msbuild OpenUtau -t:BundleApp -p:Configuration=Release -p:RuntimeIdentifier=${{ matrix.arch.rid }} -p:UseAppHost=true -p:SelfContained=true -p:OutputPath=../bin/${{ matrix.arch.name }}/
         if: ${{ matrix.arch.os == 'osx' }}
-      
+
+      - name: Add Liquid Glass icon (macOS)
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.2.app
+          chmod +x .github/scripts/add-liquid-glass-icon.sh
+          .github/scripts/add-liquid-glass-icon.sh \
+            bin/${{ matrix.arch.name }}/publish/OpenUtau.app \
+            OpenUtau/Assets/OpenUtau.icon \
+            OpenUtau
+        if: ${{ matrix.arch.os == 'osx' }}
+
+      # The macOS runner is a plugin execution provider: without its library in the
+      # bundle the app silently falls back to CPU, so fail the build here instead.
+      - name: Verify WebGPU execution provider is bundled (macOS)
+        run: |
+          app="bin/${{ matrix.arch.name }}/publish/OpenUtau.app"
+          lib=$(find "$app" -name 'libonnxruntime_providers_webgpu.dylib' -print -quit)
+          if [ -z "$lib" ]; then
+            echo "::error::libonnxruntime_providers_webgpu.dylib is missing from $app"
+            find "$app" -name '*onnxruntime*' -print
+            exit 1
+          fi
+          echo "WebGPU plugin library: $lib"
+        if: ${{ matrix.arch.os == 'osx' }}
+
       - name: Write release channel info
-        run: "@{Beta=$${{ inputs.beta }}} | ConvertTo-Json > bin/${{ matrix.arch.name }}/prefs-default.json"
+        run: "@{Channel='${{ needs.next-version.outputs.channel }}'} | ConvertTo-Json > bin/${{ matrix.arch.name }}/prefs-default.json"
         shell: pwsh
 
       # Create Zip
@@ -160,7 +304,7 @@ jobs:
         uses: joncloud/makensis-action@v4.1
         with:
           script-file: OpenUtau.nsi
-          arguments: "-DPRODUCT_VERSION=${{ inputs.version }} -DARCH=${{ matrix.arch.arch }}"
+          arguments: "-DPRODUCT_VERSION=${{ needs.next-version.outputs.version }} -DARCH=${{ matrix.arch.arch }}"
         if: ${{ matrix.arch.os == 'win' }}
 
       # Create Dmg
@@ -184,43 +328,139 @@ jobs:
           cp OpenUtau/Assets/AppRun bin/${{ matrix.arch.name }}
           chmod 755 bin/${{ matrix.arch.name }}/AppRun
           ARCH=${{ matrix.arch.linuxarch }} linuxdeploy --appdir bin/${{ matrix.arch.name }} --output appimage
+          # linuxdeploy names the output by linux arch (OpenUtau-x86_64.AppImage);
+          # rename to the matrix name so artifact, file, and release all match.
+          mv OpenUtau-${{ matrix.arch.linuxarch }}.AppImage OpenUtau-${{ matrix.arch.name }}.AppImage
         if: ${{ matrix.arch.os == 'linux' }}
 
+      # Always upload so successful legs keep their artifacts even when the
+      # release job is skipped (draft/no-release dispatches) or gated off
+      # by a failed leg.
       # Upload Artifacts
       - uses: actions/upload-artifact@v4
         with:
+<<<<<<< HEAD
           name: OpenUtau-Lunai-${{ matrix.arch.name }}.tar.gz
           path: OpenUtau-Lunai-${{ matrix.arch.name }}.tar.gz
         if: ${{ !inputs.release && matrix.arch.os == 'linux' }}
+||||||| 29e0e16d
+          name: OpenUtau-${{ matrix.arch.name }}.tar.gz
+          path: OpenUtau-${{ matrix.arch.name }}.tar.gz
+        if: ${{ !inputs.release && matrix.arch.os == 'linux' }}
+=======
+          name: OpenUtau-${{ matrix.arch.name }}.tar.gz
+          path: OpenUtau-${{ matrix.arch.name }}.tar.gz
+        if: ${{ matrix.arch.os == 'linux' }}
+>>>>>>> upstream/master
 
       - uses: actions/upload-artifact@v4
         with:
+<<<<<<< HEAD
           name: OpenUtau-Lunai-${{ matrix.arch.name }}.zip
           path: OpenUtau-Lunai-${{ matrix.arch.name }}.zip
         if: ${{ !inputs.release && matrix.arch.os == 'win' }}
+||||||| 29e0e16d
+          name: OpenUtau-${{ matrix.arch.name }}.zip
+          path: OpenUtau-${{ matrix.arch.name }}.zip
+        if: ${{ !inputs.release && matrix.arch.os == 'win' }}
+=======
+          name: OpenUtau-${{ matrix.arch.name }}.zip
+          path: OpenUtau-${{ matrix.arch.name }}.zip
+        if: ${{ matrix.arch.os == 'win' }}
+>>>>>>> upstream/master
 
       - uses: actions/upload-artifact@v4
         with:
+<<<<<<< HEAD
           name: OpenUtau-Lunai-${{ matrix.arch.name }}.exe
           path: OpenUtau-Lunai-${{ matrix.arch.name }}.exe
         if: ${{ !inputs.release && matrix.arch.os == 'win' }}
       
+||||||| 29e0e16d
+          name: OpenUtau-${{ matrix.arch.name }}.exe
+          path: OpenUtau-${{ matrix.arch.name }}.exe
+        if: ${{ !inputs.release && matrix.arch.os == 'win' }}
+      
+=======
+          name: OpenUtau-${{ matrix.arch.name }}.exe
+          path: OpenUtau-${{ matrix.arch.name }}.exe
+        if: ${{ matrix.arch.os == 'win' }}
+
+>>>>>>> upstream/master
       - uses: actions/upload-artifact@v4
         with:
+<<<<<<< HEAD
           name: OpenUtau-Lunai-${{ matrix.arch.name }}.AppImage
           path: OpenUtau-${{ matrix.arch.linuxarch }}.AppImage
         if: ${{ !inputs.release && matrix.arch.os == 'linux' }}
+||||||| 29e0e16d
+          name: OpenUtau-${{ matrix.arch.name }}.AppImage
+          path: OpenUtau-${{ matrix.arch.linuxarch }}.AppImage
+        if: ${{ !inputs.release && matrix.arch.os == 'linux' }}
+=======
+          name: OpenUtau-${{ matrix.arch.name }}.AppImage
+          path: OpenUtau-${{ matrix.arch.name }}.AppImage
+        if: ${{ matrix.arch.os == 'linux' }}
+>>>>>>> upstream/master
 
       - uses: actions/upload-artifact@v4
         with:
+<<<<<<< HEAD
           name: OpenUtau-Lunai-${{ matrix.arch.name }}.dmg
           path: OpenUtau-Lunai-${{ matrix.arch.name }}.dmg
         if: ${{ !inputs.release && matrix.arch.os == 'osx' }}
+||||||| 29e0e16d
+          name: OpenUtau-${{ matrix.arch.name }}.dmg
+          path: OpenUtau-${{ matrix.arch.name }}.dmg
+        if: ${{ !inputs.release && matrix.arch.os == 'osx' }}
+=======
+          name: OpenUtau-${{ matrix.arch.name }}.dmg
+          path: OpenUtau-${{ matrix.arch.name }}.dmg
+        if: ${{ matrix.arch.os == 'osx' }}
+
+  release:
+    # needs: build means this job only runs when EVERY matrix leg succeeded,
+    # so a release is never published from a partially failed build.
+    needs: [next-version, build]
+    if: needs.next-version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: OpenUtau-win-x64.zip
+      - uses: actions/download-artifact@v4
+        with:
+          name: OpenUtau-win-x64.exe
+      - uses: actions/download-artifact@v4
+        with:
+          name: OpenUtau-win-arm64.zip
+      - uses: actions/download-artifact@v4
+        with:
+          name: OpenUtau-win-arm64.exe
+      - uses: actions/download-artifact@v4
+        with:
+          name: OpenUtau-osx-arm64.dmg
+      - uses: actions/download-artifact@v4
+        with:
+          name: OpenUtau-linux-x64.tar.gz
+      - uses: actions/download-artifact@v4
+        with:
+          name: OpenUtau-linux-x64.AppImage
+      - uses: actions/download-artifact@v4
+        with:
+          name: OpenUtau-linux-arm64.tar.gz
+      - uses: actions/download-artifact@v4
+        with:
+          name: OpenUtau-linux-arm64.AppImage
+>>>>>>> upstream/master
 
       # Appcast
-      - name: Appcast Windows
-        shell: cmd
+      - name: Appcast
         run: |
+<<<<<<< HEAD
           python appcast.py -v=${{ inputs.version }} -o=windows -r=${{ matrix.arch.name }} -f=OpenUtau-Lunai-${{ matrix.arch.name }}.zip
           python appcast.py -v=${{ inputs.version }} -o=windows -r=${{ matrix.arch.name }}-installer -f=OpenUtau-Lunai-${{ matrix.arch.name }}.exe
         if: ${{ inputs.release && matrix.arch.os == 'win' }}
@@ -234,23 +474,67 @@ jobs:
         run: |
           python appcast.py -v=${{ inputs.version }} -o=linux -r=${{ matrix.arch.name }} -f=OpenUtau-Lunai-${{ matrix.arch.name }}.tar.gz
         if: ${{ inputs.release && matrix.arch.os == 'linux' }}
+||||||| 29e0e16d
+          python appcast.py -v=${{ inputs.version }} -o=windows -r=${{ matrix.arch.name }} -f=OpenUtau-${{ matrix.arch.name }}.zip
+          python appcast.py -v=${{ inputs.version }} -o=windows -r=${{ matrix.arch.name }}-installer -f=OpenUtau-${{ matrix.arch.name }}.exe
+        if: ${{ inputs.release && matrix.arch.os == 'win' }}
+
+      - name: Appcast MacOS
+        run: |
+          python appcast.py -v=${{ inputs.version }} -o=macos -r=${{ matrix.arch.name }} -f=OpenUtau-${{ matrix.arch.name }}.dmg
+        if: ${{ inputs.release && matrix.arch.os == 'osx' }}
+
+      - name: Appcast Linux
+        run: |
+          python appcast.py -v=${{ inputs.version }} -o=linux -r=${{ matrix.arch.name }} -f=OpenUtau-${{ matrix.arch.name }}.tar.gz
+        if: ${{ inputs.release && matrix.arch.os == 'linux' }}
+=======
+          python appcast.py -v=${{ needs.next-version.outputs.version }} --tag=${{ needs.next-version.outputs.tag }} -o=windows -r=win-x64 -f=OpenUtau-win-x64.zip
+          python appcast.py -v=${{ needs.next-version.outputs.version }} --tag=${{ needs.next-version.outputs.tag }} -o=windows -r=win-x64-installer -f=OpenUtau-win-x64.exe
+          python appcast.py -v=${{ needs.next-version.outputs.version }} --tag=${{ needs.next-version.outputs.tag }} -o=windows -r=win-arm64 -f=OpenUtau-win-arm64.zip
+          python appcast.py -v=${{ needs.next-version.outputs.version }} --tag=${{ needs.next-version.outputs.tag }} -o=windows -r=win-arm64-installer -f=OpenUtau-win-arm64.exe
+          python appcast.py -v=${{ needs.next-version.outputs.version }} --tag=${{ needs.next-version.outputs.tag }} -o=macos -r=osx-arm64 -f=OpenUtau-osx-arm64.dmg
+          python appcast.py -v=${{ needs.next-version.outputs.version }} --tag=${{ needs.next-version.outputs.tag }} -o=linux -r=linux-x64 -f=OpenUtau-linux-x64.tar.gz
+          python appcast.py -v=${{ needs.next-version.outputs.version }} --tag=${{ needs.next-version.outputs.tag }} -o=linux -r=linux-arm64 -f=OpenUtau-linux-arm64.tar.gz
+          python appcast.py -v=${{ needs.next-version.outputs.version }} --tag=${{ needs.next-version.outputs.tag }} -o=linux -r=linux-x64-appimage -f=OpenUtau-linux-x64.AppImage
+          python appcast.py -v=${{ needs.next-version.outputs.version }} --tag=${{ needs.next-version.outputs.tag }} -o=linux -r=linux-arm64-appimage -f=OpenUtau-linux-arm64.AppImage
+>>>>>>> upstream/master
 
       # Release
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.version }}
-          name: ${{ env.release-name }}
-          prerelease: ${{ inputs.beta }}
-          draft: ${{ inputs.draft }}
+          tag_name: ${{ needs.next-version.outputs.tag }}
+          name: ${{ needs.next-version.outputs.name }}
+          prerelease: ${{ needs.next-version.outputs.channel != 'stable' }}
+          draft: ${{ needs.next-version.outputs.draft }}
           files: |
+<<<<<<< HEAD
             appcast.${{ matrix.arch.name }}*.xml
             OpenUtau-Lunai-${{ matrix.arch.name }}.*
+||||||| 29e0e16d
+            appcast.${{ matrix.arch.name }}*.xml
+            OpenUtau-${{ matrix.arch.name }}.*
+=======
+            appcast.*.xml
+            OpenUtau-*.zip
+            OpenUtau-*.exe
+            OpenUtau-*.dmg
+            OpenUtau-*.tar.gz
+            OpenUtau-*.AppImage
+>>>>>>> upstream/master
           body: |
             See [Getting Started](https://github.com/stakira/OpenUtau/wiki/Getting-Started) for how to use.
 
             If you encountered issues, see [FAQ](https://github.com/stakira/OpenUtau/wiki/FAQ)
 
             ## macOS says "This app is damaged"
+<<<<<<< HEAD
             Open a terminal and run `xattr -rc "/Applications/OpenUtau-Lunai.app"`. Try opening OpenUtau Lunai again.
         if: ${{ inputs.release }}
+||||||| 29e0e16d
+            Open a terminal and run `xattr -rc /Applications/OpenUtau.app`. Try opening OpenUtau again.
+        if: ${{ inputs.release }}
+=======
+            Open a terminal and run `xattr -rc /Applications/OpenUtau.app`. Try opening OpenUtau again.
+>>>>>>> upstream/master

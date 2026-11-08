@@ -1,22 +1,15 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
-using Avalonia.Media.Imaging;
-using OpenUtau.App;
 using OpenUtau.App.ViewModels;
 using OpenUtau.Core;
-using OpenUtau.Core.Render;
-using OpenUtau.Core.SignalChain;
-using OpenUtau.Core.Ustx;
-using OpenUtau.Core.Util;
-using ReactiveUI;
-using Serilog;
 
 namespace OpenUtau.App.Controls {
+    /// <summary>
+    /// The rendered audio of the open part, drawn behind the notes as a
+    /// <see cref="WaveformEnvelope"/> on a grid from TickOrigin, rebuilt on newly
+    /// rendered audio.
+    /// </summary>
     class WaveformImage : Control {
         const float DiffSingerAmplitudeGain = 1.2f;
         const float VerticalFill = 0.92f;
@@ -49,33 +42,18 @@ namespace OpenUtau.App.Controls {
             set { SetAndRaise(ShowWaveformProperty, ref showWaveform, value); }
         }
 
+        private const int SampleRate = 44100;
+        private const int Channels = 2;
+        private static readonly IBrush Fill = new SolidColorBrush(Color.FromArgb(0x7F, 0x7F, 0x7F, 0x7F));
+
         private double tickWidth;
         private double tickOffset;
         private bool showWaveform;
 
-        private WriteableBitmap? bitmap;
+        private readonly WaveformEnvelope envelope = new WaveformEnvelope();
         private float[] sampleData = new float[0];
-        private int sampleCount;
-        private int[] bitmapData = new int[0];
-        private DateTime mixUnlockTime = DateTime.MinValue;
-        private bool wasRendering = false;
 
         public WaveformImage() {
-            PhraseWaveformCache.Changed += OnPhraseWaveformCacheChanged;
-            // The projection payload is not read here; deliveries are repaint signals.
-            RenderView.Inst.Observe(_ => RequestRedraw());
-            MessageBus.Current.Listen<ThemeChangedEvent>()
-                .Subscribe(e => RequestRedraw());
-        }
-
-        void OnPhraseWaveformCacheChanged() {
-            RequestRedraw();
-        }
-
-        void RequestRedraw() {
-            Avalonia.Threading.Dispatcher.UIThread.Post(
-                InvalidateVisual,
-                Avalonia.Threading.DispatcherPriority.Render);
         }
 
         protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change) {
@@ -83,318 +61,49 @@ namespace OpenUtau.App.Controls {
             if (change.Property == DataContextProperty ||
                 change.Property == TickWidthProperty ||
                 change.Property == TickOffsetProperty ||
-                change.Property == ShowWaveformProperty) {
+                change.Property == ShowWaveformProperty ||
+                change.Property == BoundsProperty) {
                 InvalidateVisual();
             }
         }
 
         public override void Render(DrawingContext context) {
-            if (DataContext == null || double.IsNaN(((NotesViewModel)DataContext).TickOffset)) {
+            base.Render(context);
+            if (DataContext is not NotesViewModel viewModel || double.IsNaN(viewModel.TickOffset) ||
+                !ShowWaveform || viewModel.TickWidth <= ViewConstants.PianoRollTickWidthShowDetails) {
                 return;
             }
-            var bitmap = GetBitmap();
-            if (bitmap != null) {
-                Array.Clear(bitmapData, 0, bitmapData.Length);
-                var viewModel = (NotesViewModel?)DataContext;
-                if (viewModel != null && ShowWaveform &&
-                    viewModel.TickWidth > ViewConstants.PianoRollTickWidthShowDetails) {
-                    var project = viewModel.Project;
-                    var part = viewModel.Part;
-                    if (project != null && part != null) {
-                        double leftMs = project.timeAxis.TickPosToMsPos(viewModel.TickOrigin + viewModel.TickOffset);
-                        double rightMs = project.timeAxis.TickPosToMsPos(viewModel.TickOrigin + viewModel.TickOffset + viewModel.ViewportTicks);
-                        int samplePos = (int)(leftMs * 44100 / 1000) * 2;
-                        sampleCount = (int)((rightMs - leftMs) * 44100 / 1000) * 2;
 
-                        if (sampleData.Length < sampleCount) {
-                            Array.Resize(ref sampleData, sampleCount);
-                        }
-
-                        bool needsAnotherFrame = false;
-                        Array.Clear(sampleData, 0, sampleData.Length);
-
-                        bool isRendering = OpenUtau.Core.PlaybackManager.Inst.StartingToPlay;
-                        var planner = OpenUtau.Core.PlaybackManager.Inst.MixPlanner;
-                        // The part's current projection: phrase hashes and
-                        // precomputed layouts, shared by the placement list below
-                        // and the draw coverage further down.
-                        var projection = RenderView.Inst.Current(part);
-                        var phraseView = new (ulong hash, double startMs, double endMs)[projection.Phrases.Count];
-                        for (int p = 0; p < projection.Phrases.Count; ++p) {
-                            var view = projection.Phrases[p];
-                            phraseView[p] = (view.Hash, view.Layout.StartMs, view.Layout.EndMs);
-                        }
-                        bool useAuthoritativeMix = false;
-                        List<(double posMs, double durMs, int channels, Frozen<float> pcm)>? pcmList = null;
-                        if (part.RenderMixComplete && !isRendering
-                            && MixPlanner.TryGetPartPlacements(planner, part, phraseView, out var placements)
-                            && placements.Count == phraseView.Length) {
-                            useAuthoritativeMix = true;
-                            pcmList = placements;
-                        }
-                        if (useAuthoritativeMix && pcmList != null) {
-                            var slots = new SampleSlot[pcmList.Count];
-                            for (int i = 0; i < pcmList.Count; ++i) {
-                                var p = pcmList[i];
-                                slots[i] = new SampleSlot(p.posMs, p.durMs, 0, p.channels, p.pcm, SlotState.Ready);
-                            }
-                            var source = new SlotMixSource();
-                            source.SetSlots(slots);
-                            source.Mix(samplePos, sampleData, 0, sampleCount);
-                        } else {
-                            FillFromPhraseCache(part.trackNo, leftMs, ref needsAnotherFrame);
-                        }
-
-                        if (wasRendering && !isRendering) {
-                            mixUnlockTime = DateTime.Now;
-                        }
-                        wasRendering = isRendering;
-
-                        float snapEase = 1.0f;
-                        if (part.RenderMixComplete) {
-                            double snapAgeMs = (DateTime.Now - mixUnlockTime).TotalMilliseconds;
-                            double snapProgress = Math.Clamp(snapAgeMs / PhraseWaveformCache.FadeDurationMs, 0.0, 1.0);
-                            snapEase = 1.0f - (float)Math.Pow(1.0 - snapProgress, 3);
-                            if (snapProgress < 1.0) needsAnotherFrame = true;
-                        }
-
-                        float amplitudeGain = GetAmplitudeGain(part, project);
-                        var renderRanges = PhraseWaveformCache.GetRenderingRanges(part.trackNo);
-                        int startSample = 0;
-                        for (int i = 0; i < bitmap.PixelSize.Width; ++i) {
-                            double startTick = viewModel.TickOrigin + viewModel.TickOffset + i / viewModel.TickWidth;
-                            double endTick = viewModel.TickOrigin + viewModel.TickOffset + (i + 1.0) / viewModel.TickWidth;
-                            double colStartMs = project.timeAxis.TickPosToMsPos(startTick);
-                            double endMs = project.timeAxis.TickPosToMsPos(endTick);
-                            // Hide real waveform under active render placeholders.
-                            if (OverlapsRenderingRange(renderRanges, colStartMs, endMs)) {
-                                startSample = Math.Clamp((int)((endMs - leftMs) * 44100 / 1000) * 2, 0, sampleCount);
-                                continue;
-                            }
-                            int endSample = Math.Clamp((int)((endMs - leftMs) * 44100 / 1000) * 2, 0, sampleCount);
-
-                            if (endSample > startSample) {
-                                float rawMin = float.MaxValue;
-                                float rawMax = float.MinValue;
-                                for (int s = startSample; s < endSample; s++) {
-                                    float val = sampleData[s];
-                                    if (val < rawMin) rawMin = val;
-                                    if (val > rawMax) rawMax = val;
-                                }
-                                if (rawMin == float.MaxValue) rawMin = 0;
-                                if (rawMax == float.MinValue) rawMax = 0;
-                                rawMin = Math.Clamp(rawMin * amplitudeGain * snapEase, -1f, 1f);
-                                rawMax = Math.Clamp(rawMax * amplitudeGain * snapEase, -1f, 1f);
-                                float min = 0.5f + rawMin * 0.5f * VerticalFill;
-                                float max = 0.5f + rawMax * 0.5f * VerticalFill;
-                                float yMax = Math.Clamp(max * bitmap.PixelSize.Height, 0, bitmap.PixelSize.Height - 1);
-                                float yMin = Math.Clamp(min * bitmap.PixelSize.Height, 0, bitmap.PixelSize.Height - 1);
-                                if (Math.Abs(yMax - yMin) > 0.01) {
-                                    DrawPeak(bitmapData, bitmap.PixelSize.Width, i, (int)Math.Round(yMin), (int)Math.Round(yMax));
-                                }
-                            }
-                            startSample = endSample;
-                        }
-
-                        if (needsAnotherFrame) {
-                            RequestRedraw();
-                        }
                     }
                 }
-                using (var frameBuffer = bitmap.Lock()) {
-                    Marshal.Copy(bitmapData, 0, frameBuffer.Address, bitmapData.Length);
-                }
-            }
-            base.Render(context);
-            if (bitmap != null) {
-                var rect = Bounds.WithX(0).WithY(0);
-                context.DrawImage(bitmap, rect, rect);
-            }
-            var vm = DataContext as NotesViewModel;
-            if (vm != null && ShowWaveform &&
-                vm.TickWidth > ViewConstants.PianoRollTickWidthShowDetails &&
-                vm.Project != null && vm.Part != null) {
-                bool animating = DrawRenderPlaceholders(context, vm);
-                if (animating) {
-                    RequestRedraw();
-                }
-            }
-        }
-
-        /// <summary>
-        /// Draw traveling-wave placeholders over ms ranges currently rendering.
-        /// Returns true when another frame is needed.
-        /// </summary>
-        bool DrawRenderPlaceholders(DrawingContext context, NotesViewModel viewModel) {
-            var ranges = PhraseWaveformCache.GetRenderingRanges(viewModel.Part!.trackNo);
-            if (ranges.Count == 0) {
-                return false;
-            }
-            var project = viewModel.Project!;
-            double height = Bounds.Height;
-            double width = Bounds.Width;
-            if (height <= 1 || width <= 1) {
-                return false;
-            }
-            double phase = DateTime.UtcNow.TimeOfDay.TotalSeconds;
-            Color peak = GetWaveformPeakColorStruct();
-            bool any = false;
-            foreach (var range in ranges) {
-                double x0 = MsToX(project, viewModel, range.StartMs);
-                double x1 = MsToX(project, viewModel, range.EndMs);
-                if (x1 < 0 || x0 > width) {
+                int s0 = Math.Clamp(SampleIndex(fromMs) - firstSample, 0, sampleCount);
+                int s1 = Math.Clamp(SampleIndex(toMs) - firstSample, 0, sampleCount);
+                if (!covered || fromMs < 0) {
+                    columnMin[i] = columnMax[i] = float.NaN;
+                    if (s1 > 0) {
+                        lastValue = sampleData[s1 - 1];
+                    }
                     continue;
                 }
-                x0 = Math.Clamp(x0, 0, width);
-                x1 = Math.Clamp(x1, 0, width);
-                if (x1 - x0 < 1) {
-                    continue;
+                float min, max;
+                if (s1 > s0) {
+                    min = float.MaxValue;
+                    max = float.MinValue;
+                    for (int s = s0; s < s1; ++s) {
+                        float v = sampleData[s];
+                        if (v < min) min = v;
+                        if (v > max) max = v;
+                    }
+                    lastValue = sampleData[s1 - 1];
+                } else {
+                    // Zoomed in past one sample per column: hold the last sample.
+                    min = max = lastValue;
                 }
-                any = true;
-                DrawTravelingWave(context, new Rect(x0, 0, x1 - x0, height), peak, phase);
-            }
-            return any;
-        }
-
-        static double MsToX(UProject project, NotesViewModel viewModel, double ms) {
-            double tick = project.timeAxis.MsPosToTickPos(ms);
-            return (tick - viewModel.TickOrigin - viewModel.TickOffset) * viewModel.TickWidth;
-        }
-
-        static bool OverlapsRenderingRange(
-            IReadOnlyList<PhraseWaveformCache.RenderingRange> ranges,
-            double startMs,
-            double endMs) {
-            for (int i = 0; i < ranges.Count; i++) {
-                var r = ranges[i];
-                if (endMs > r.StartMs && startMs < r.EndMs) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        static void DrawTravelingWave(DrawingContext context, Rect band, Color peak, double phase) {
-            double midY = band.Center.Y;
-            // Vertical amp from lane height only — not from segment length.
-            double amp = band.Height * 0.16;
-            // Fixed spatial wavelength in pixels so long/short segments don't stretch.
-            const double pixelsPerCycle = 64;
-            const double edgeFlat = 0.14;
-            var pen = new Pen(new SolidColorBrush(peak), 1.5);
-            int steps = Math.Max(2, (int)Math.Ceiling(band.Width / 2.0));
-            double omega = 2 * Math.PI / pixelsPerCycle;
-            Point? prev = null;
-            for (int i = 0; i <= steps; i++) {
-                double t = (double)i / steps;
-                double x = band.X + t * band.Width;
-                double localX = x - band.X;
-                double wave = Math.Sin(localX * omega - phase * 6)
-                    * (0.55 + 0.45 * Math.Sin(phase * 2.2 + localX * omega * 0.25));
-                double env = AmplitudeEnvelope(t, edgeFlat);
-                double y = midY + wave * amp * env;
-                var pt = new Point(x, y);
-                if (prev.HasValue) {
-                    context.DrawLine(pen, prev.Value, pt);
-                }
-                prev = pt;
+                columnMin[i] = min;
+                columnMax[i] = max;
             }
         }
 
-        /// <summary>
-        /// 0 at the left/right edges (flat center line), smoothstep up to 1 in the middle.
-        /// </summary>
-        static double AmplitudeEnvelope(double t, double edgeFlat) {
-            if (edgeFlat <= 0) {
-                return 1;
-            }
-            if (t <= 0 || t >= 1) {
-                return 0;
-            }
-            if (t < edgeFlat) {
-                double u = t / edgeFlat;
-                return u * u * (3 - 2 * u);
-            }
-            if (t > 1 - edgeFlat) {
-                double u = (1 - t) / edgeFlat;
-                return u * u * (3 - 2 * u);
-            }
-            return 1;
-        }
-
-        void FillFromPhraseCache(int trackNo, double leftMs, ref bool needsAnotherFrame) {
-            foreach (var cacheItem in PhraseWaveformCache.GetForTrack(trackNo)) {
-                float visualScale = PhraseWaveformCache.GetVisualScale(in cacheItem, ref needsAnotherFrame);
-                if (visualScale <= 0.001f) {
-                    continue;
-                }
-                double phraseStartMs = cacheItem.PosMs;
-                float[] phraseSamples = cacheItem.WaveformSamples;
-                int phraseStartSampleIdx = (int)((phraseStartMs - leftMs) * 44100 / 1000);
-                int startJ = Math.Max(0, -phraseStartSampleIdx);
-                int endJ = Math.Min(phraseSamples.Length, (sampleCount / 2) - phraseStartSampleIdx);
-                for (int j = startJ; j < endJ; j++) {
-                    int targetIdx = (phraseStartSampleIdx + j) * 2;
-                    float scaledSample = phraseSamples[j] * visualScale;
-                    sampleData[targetIdx] += scaledSample;
-                    sampleData[targetIdx + 1] += scaledSample;
-                }
-            }
-        }
-
-        static float GetAmplitudeGain(UVoicePart part, UProject project) {
-            if (part.trackNo < 0 || part.trackNo >= project.tracks.Count) {
-                return 1f;
-            }
-            return project.tracks[part.trackNo].Singer?.SingerType == USingerType.DiffSinger
-                ? DiffSingerAmplitudeGain
-                : 1f;
-        }
-
-        private WriteableBitmap? GetBitmap() {
-            int desiredWidth = (int)Bounds.Width;
-            int desiredHeight = (int)Bounds.Height;
-            if (desiredWidth == 0 || desiredHeight == 0) {
-                return null;
-            }
-            if (bitmap == null || bitmap.Size.Width < desiredWidth) {
-                bitmap?.Dispose();
-                var size = new PixelSize(desiredWidth, desiredHeight);
-                bitmap = new WriteableBitmap(
-                    size, new Vector(96, 96),
-                    Avalonia.Platform.PixelFormat.Rgba8888,
-                    Avalonia.Platform.AlphaFormat.Unpremul);
-                Log.Information($"Created bitmap {size}");
-                bitmapData = new int[size.Width * size.Height];
-            }
-            return bitmap;
-        }
-
-        private static Color GetWaveformPeakColorStruct() {
-            if (Application.Current?.TryFindResource("PianoRollWaveformPeakColor", out var resource) == true
-                && resource is Color color) {
-                return color;
-            }
-            return Color.FromArgb(0x3B, 0xFF, 0xFF, 0xFF);
-        }
-
-        private static int GetWaveformPeakColor() {
-            var color = GetWaveformPeakColorStruct();
-            return unchecked((int)(((uint)color.A << 24) | ((uint)color.R << 16) | ((uint)color.G << 8) | color.B));
-        }
-
-        private void DrawPeak(int[] data, int width, int x, int y1, int y2) {
-            int color = GetWaveformPeakColor();
-            if (y1 > y2) {
-                int temp = y2;
-                y2 = y1;
-                y1 = temp;
-            }
-            if (y2 - y1 > 0.01) {
-                for (var y = y1; y <= y2; ++y) {
-                    data[x + width * y] = color;
-                }
-            }
         }
     }
 }

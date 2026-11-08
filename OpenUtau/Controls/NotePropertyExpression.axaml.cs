@@ -25,7 +25,7 @@ namespace OpenUtau.App.Controls {
                 textBoxValue = textBox.Text ?? string.Empty;
             }
         }
-        void OnTextBoxLostFocus(object? sender, RoutedEventArgs args) {
+        void OnTextBoxLostFocus(object? sender, FocusChangedEventArgs args) {
             Log.Debug("Note property textbox lost focus");
             if (sender is TextBox textBox && textBoxValue != textBox.Text) {
                 SetNumericalExpressions(textBox.Text);

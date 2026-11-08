@@ -11,7 +11,6 @@ using OpenUtau.App;
 using OpenUtau.App.ViewModels;
 using OpenUtau.Core;
 using OpenUtau.Core.Ustx;
-using ReactiveUI;
 
 namespace OpenUtau.App.Controls {
     public partial class LyricBox : UserControl {
@@ -31,76 +30,10 @@ namespace OpenUtau.App.Controls {
             blendBox = PART_BlendBox;
             listBox = PART_Suggestions;
             IsVisible = false;
-            // ListBoxItem handles PointerPressed on the bubble route, so template/XAML
-            // handlers never run. Tunnel on the ListBox so LMB pick applies like Enter.
-            listBox.AddHandler(
-                InputElement.PointerPressedEvent,
-                Suggestions_PointerPressed,
-                RoutingStrategies.Tunnel);
-            AttachedToVisualTree += (_, _) => ScheduleApplyScrollStyle();
-            Loaded += (_, _) => ScheduleApplyScrollStyle();
-            DetachedFromVisualTree += (_, _) => scrollStyleApplyGeneration++;
-            MessageBus.Current.Listen<ScrollbarsStyleChangedEvent>()
-                .Subscribe(_ => ScheduleApplyScrollStyle());
         }
 
-        void ScheduleApplyScrollStyle() {
-            if (!WorkspaceScrollbarHelper.IsInVisualTree(this)) {
-                return;
-            }
-            int generation = ++scrollStyleApplyGeneration;
-            Dispatcher.UIThread.Post(() => {
-                if (generation != scrollStyleApplyGeneration || !WorkspaceScrollbarHelper.IsInVisualTree(this)) {
-                    return;
-                }
-                ApplyScrollStyle();
-            }, DispatcherPriority.Loaded);
         }
 
-        void ApplyScrollStyle() {
-            if (!WorkspaceScrollbarHelper.IsInVisualTree(this)) {
-                return;
-            }
-            var scrollViewer = listBox.GetVisualDescendants().OfType<ScrollViewer>().FirstOrDefault();
-            if (scrollViewer == null) {
-                return;
-            }
-            scrollViewer.Classes.Add("workspaceScroll");
-            scrollViewer.AllowAutoHide = false;
-            WorkspaceScrollbarHelper.ApplyScrollViewer(scrollViewer, WorkspaceScrollbarHelper.UseClassicScrollbars);
-        }
-
-        private void Box_GotFocus(object? sender, FocusChangedEventArgs e) {
-            viewModel.SuggestionFromBlend = false;
-            if (selectAllOnNextGotFocus && !restoringInputFocus) {
-                box.SelectAll();
-                selectAllOnNextGotFocus = false;
-            }
-        }
-
-        private void BlendBox_GotFocus(object? sender, FocusChangedEventArgs e) {
-            viewModel.SuggestionFromBlend = true;
-            if (blendBox != null && selectAllOnNextGotFocus && !restoringInputFocus) {
-                blendBox.SelectAll();
-                selectAllOnNextGotFocus = false;
-            }
-        }
-
-        /// <summary>
-        /// Re-focus the active lyric/blend field without SelectAll (used after Alt/layout
-        /// switches briefly steal keyboard focus).
-        /// </summary>
-        public void RestoreInputFocus() {
-            if (!viewModel.IsVisible) {
-                return;
-            }
-            TextBox target = viewModel.SuggestionFromBlend && blendBox != null ? blendBox : box;
-            restoringInputFocus = true;
-            try {
-                target.Focus();
-            } finally {
-                restoringInputFocus = false;
-            }
         }
 
         private void ListBox_KeyDown(object? sender, KeyEventArgs e) {
@@ -117,12 +50,8 @@ namespace OpenUtau.App.Controls {
                     e.Handled = true;
                     break;
                 case Key.Tab:
-                    if (!viewModel.IsAliasBox) {
-                        if (listBox.SelectedItem is LyricBoxViewModel.SuggestionItem item1) {
-                            ApplySuggestionToBoxes(item1.Alias);
-                        }
-                        OnTab(e.KeyModifiers);
                     }
+                    OnTab(e.KeyModifiers);
                     e.Handled = true;
                     break;
                 case Key.Up:
@@ -174,9 +103,7 @@ namespace OpenUtau.App.Controls {
                     e.Handled = true;
                     break;
                 case Key.Tab:
-                    if (!viewModel.IsAliasBox) {
-                        OnTab(e.KeyModifiers);
-                    }
+                    OnTab(e.KeyModifiers);
                     e.Handled = true;
                     break;
                 case Key.Up:
@@ -221,17 +148,35 @@ namespace OpenUtau.App.Controls {
 
         private void OnTab(KeyModifiers keyModifiers) {
             UVoicePart? part = viewModel.Part;
-            UNote? tabTo = null;
-            var tabFrom = viewModel.NoteOrPhoneme as LyricBoxNote;
-            if (keyModifiers == KeyModifiers.None) {
-                tabTo = tabFrom?.Unwrap().Next;
-            } else if (keyModifiers == KeyModifiers.Shift) {
-                tabTo = tabFrom?.Unwrap().Prev;
+            var tabFrom = viewModel.NoteOrPhoneme;
+            LyricBoxNoteOrPhoneme? tabTo = null;
+            UNote? focusNote = null;
+            string? text = null;
+            if (tabFrom is LyricBoxNote noteBox) {
+                UNote? note = noteBox.Unwrap();
+                note = keyModifiers == KeyModifiers.None ? note.Next
+                    : keyModifiers == KeyModifiers.Shift ? note.Prev
+                    : null;
+                if (note != null) {
+                    tabTo = new LyricBoxNote(note);
+                    focusNote = note;
+                    text = note.lyric;
+                }
+            } else if (tabFrom is LyricBoxPhoneme phonemeBox) {
+                UPhoneme? phoneme = phonemeBox.Unwrap();
+                phoneme = keyModifiers == KeyModifiers.None ? phoneme.Next
+                    : keyModifiers == KeyModifiers.Shift ? phoneme.Prev
+                    : null;
+                if (phoneme != null) {
+                    tabTo = new LyricBoxPhoneme(phoneme);
+                    focusNote = phoneme.Parent;
+                    text = phoneme.phoneme;
+                }
             }
             EndEdit(true);
-            if (tabTo != null && part != null) {
-                DocManager.Inst.ExecuteCmd(new FocusNoteNotification(part, tabTo));
-                Show(part, new LyricBoxNote(tabTo), tabTo.lyric);
+            if (tabTo != null && focusNote != null && text != null && part != null) {
+                DocManager.Inst.ExecuteCmd(new FocusNoteNotification(part, focusNote));
+                Show(part, tabTo, text);
             }
         }
 
@@ -284,6 +229,7 @@ namespace OpenUtau.App.Controls {
 
         private void FocusTimer_Tick(object? sender, System.EventArgs e) {
             box.Focus();
+            box.SelectAll();
             if (focusTimer != null) {
                 focusTimer.Tick -= FocusTimer_Tick;
                 focusTimer.Stop();

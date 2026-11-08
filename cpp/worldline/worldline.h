@@ -1,6 +1,8 @@
 #ifndef WORLDLINE_WORLDLINE_H_
 #define WORLDLINE_WORLDLINE_H_
 
+#include <cstdint>
+
 #include "world/common.h"
 #include "world/constantnumbers.h"
 #include "world/matlabfunctions.h"
@@ -60,6 +62,58 @@ DLL_API int WorldSynthesis(double* const f0, int f0_length,
                            double frame_period, int fs, double* y,
                            double* const gender, double* const tension,
                            double* const breathiness, double* const voicing);
+<<<<<<< HEAD
+||||||| 29e0e16d
+
+DLL_API int Resample(const SynthRequest* request, float** y);
+
+DLL_API PhraseSynth* PhraseSynthNew();
+
+DLL_API void PhraseSynthDelete(PhraseSynth* phrase_synth);
+
+DLL_API void PhraseSynthAddRequest(PhraseSynth* phrase_synth,
+                                   const SynthRequest* request, double pos_ms,
+                                   double skip_ms, double length_ms,
+                                   double fade_in_ms, double fade_out_ms,
+                                   worldline::LogCallback logCallback);
+
+DLL_API void PhraseSynthSetCurves(PhraseSynth* phrase_synth, double* f0,
+                                  double* gender, double* tension,
+                                  double* breathiness, double* voicing,
+                                  int length,
+                                  worldline::LogCallback logCallback);
+
+DLL_API int PhraseSynthSynth(PhraseSynth* phrase_synth, float** y,
+                             worldline::LogCallback logCallback);
+=======
+
+// Worldline-R1.1 analysis from a harmonic/noise separation of samples, whose
+// harmonic part is harmonic (the noise part is samples - harmonic). All
+// outputs hold num_frames * (fft_size / 2 + 1) doubles:
+// sp_env_out: CheapTrick of samples; sp_harmonic_out: CheapTrick of harmonic;
+// ap_out: noise power over total, per frame (Hann of 2 * hop_size) and bin,
+// smoothed over 400 Hz, clipped to [1e-3, 1 - 1e-3], and fully aperiodic
+// where f0_in is unvoiced.
+DLL_API void HnAnalysisF0In(const AnalysisConfig* config, const float* samples,
+                            const float* harmonic, int num_samples,
+                            double* f0_in, int num_frames, double* sp_env_out,
+                            double* sp_harmonic_out, double* ap_out);
+
+// Worldline-R1.1 synthesis from HnAnalysisF0In features: WORLD's periodic half
+// from harmonic_sp, fully periodic, plus continuous noise. Bins of ap below f0
+// count as periodic. The noise half is white noise shaped to WORLD's own noise
+// spectrum, gender-shifted sp * ap scaled by the breathiness gain; stretch
+// (output ms per source ms) flattens it onto that spectrum when 1 and keeps
+// its natural fluctuation from 2 on. The same seed gives the same noise.
+// y must hold WorldSynthesisSampleCount() samples; inputs are not modified.
+// gender, tension, breathiness, voicing: as WorldSynthesis, all required.
+DLL_API int WorldSynthesisContinuousNoise(
+    double* const f0, int f0_length, double* const sp,
+    double* const harmonic_sp, double* const ap, double* const stretch,
+    int fft_size, int hop_size, int fs, uint64_t seed, double* y,
+    double* const gender, double* const tension, double* const breathiness,
+    double* const voicing);
+>>>>>>> upstream/master
 }
 
 #endif  // WORLDLINE_WORLDLINE_H_

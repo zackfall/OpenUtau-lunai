@@ -8,6 +8,7 @@ using OpenUtau.App;
 using OpenUtau.App.ViewModels;
 using OpenUtau.Core.Util;
 using ReactiveUI;
+using ReactiveUI.Primitives;
 
 namespace OpenUtau.App.Controls {
     class TickBackground : TemplatedControl {

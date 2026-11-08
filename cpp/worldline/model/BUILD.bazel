@@ -14,8 +14,44 @@ cc_library(
 cc_test(
     name = "effects_test",
     srcs = ["effects_test.cpp"],
+<<<<<<< HEAD
+||||||| 29e0e16d
+cc_library(
+    name = "model",
+    srcs = ["model.cpp"],
+    hdrs = ["model.h"],
+=======
     deps = [
         ":effects",
+        "@gtest//:gtest_main",
+    ],
+)
+
+cc_library(
+    name = "continuous_noise",
+    srcs = ["continuous_noise.cpp"],
+    hdrs = ["continuous_noise.h"],
+>>>>>>> upstream/master
+    deps = [
+<<<<<<< HEAD
+        ":effects",
+        "@gtest//:gtest_main",
+||||||| 29e0e16d
+        "//worldline/common:vec_utils",
+        "//worldline/f0",
+        "//worldline/platinum",
+        "@world",
+=======
+        "@world",
+>>>>>>> upstream/master
+    ],
+)
+
+cc_test(
+    name = "continuous_noise_test",
+    srcs = ["continuous_noise_test.cpp"],
+    deps = [
+        ":continuous_noise",
         "@gtest//:gtest_main",
     ],
 )
