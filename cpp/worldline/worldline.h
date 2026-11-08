@@ -62,30 +62,6 @@ DLL_API int WorldSynthesis(double* const f0, int f0_length,
                            double frame_period, int fs, double* y,
                            double* const gender, double* const tension,
                            double* const breathiness, double* const voicing);
-<<<<<<< HEAD
-||||||| 29e0e16d
-
-DLL_API int Resample(const SynthRequest* request, float** y);
-
-DLL_API PhraseSynth* PhraseSynthNew();
-
-DLL_API void PhraseSynthDelete(PhraseSynth* phrase_synth);
-
-DLL_API void PhraseSynthAddRequest(PhraseSynth* phrase_synth,
-                                   const SynthRequest* request, double pos_ms,
-                                   double skip_ms, double length_ms,
-                                   double fade_in_ms, double fade_out_ms,
-                                   worldline::LogCallback logCallback);
-
-DLL_API void PhraseSynthSetCurves(PhraseSynth* phrase_synth, double* f0,
-                                  double* gender, double* tension,
-                                  double* breathiness, double* voicing,
-                                  int length,
-                                  worldline::LogCallback logCallback);
-
-DLL_API int PhraseSynthSynth(PhraseSynth* phrase_synth, float** y,
-                             worldline::LogCallback logCallback);
-=======
 
 // Worldline-R1.1 analysis from a harmonic/noise separation of samples, whose
 // harmonic part is harmonic (the noise part is samples - harmonic). All
@@ -113,7 +89,6 @@ DLL_API int WorldSynthesisContinuousNoise(
     int fft_size, int hop_size, int fs, uint64_t seed, double* y,
     double* const gender, double* const tension, double* const breathiness,
     double* const voicing);
->>>>>>> upstream/master
 }
 
 #endif  // WORLDLINE_WORLDLINE_H_

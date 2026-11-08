@@ -166,31 +166,25 @@ namespace OpenUtau.App.ViewModels {
             Muted = track.Muted;
             Solo = track.Solo;
             MixFxEnabled = track.MixFx?.Enabled ?? false;
-            this.WhenAnyValue(x => x.Volume)
-                .Subscribe(volume => {
+            System.ObservableExtensions.Subscribe(this.WhenAnyValue(x => x.Volume),volume => {
                     track.Volume = volume;
                     DocManager.Inst.ExecuteCmd(new VolumeChangeNotification(track.TrackNo, Muted ? -24 : volume));
                 });
-            this.WhenAnyValue(x => x.Pan)
-                .Subscribe(pan => {
+            System.ObservableExtensions.Subscribe(this.WhenAnyValue(x => x.Pan),pan => {
                     track.Pan = pan;
                     DocManager.Inst.ExecuteCmd(new PanChangeNotification(track.TrackNo, pan));
                 });
-            this.WhenAnyValue(x => x.Mute)
-                .Subscribe(mute => {
+            System.ObservableExtensions.Subscribe(this.WhenAnyValue(x => x.Mute),mute => {
                     track.Mute = mute;
                 });
-            this.WhenAnyValue(x => x.Muted)
-                .Subscribe(muted => {
+            System.ObservableExtensions.Subscribe(this.WhenAnyValue(x => x.Muted),muted => {
                     track.Muted = muted;
                     DocManager.Inst.ExecuteCmd(new VolumeChangeNotification(track.TrackNo, muted ? -24 : Volume));
                 });
-            this.WhenAnyValue(x => x.Solo)
-                .Subscribe(solo => {
+            System.ObservableExtensions.Subscribe(this.WhenAnyValue(x => x.Solo),solo => {
                     track.Solo = solo;
                 });
-            this.WhenAnyValue(x => x.MixFxEnabled)
-                .Subscribe(enabled => {
+            System.ObservableExtensions.Subscribe(this.WhenAnyValue(x => x.MixFxEnabled),enabled => {
                     if (track.MixFx != null) {
                         track.MixFx.Enabled = enabled;
                     } else if (enabled) {
@@ -205,8 +199,7 @@ namespace OpenUtau.App.ViewModels {
         }
 
         void SubscribeSelectionStyle() {
-            this.WhenAnyValue(x => x.IsOpenInPianoRoll)
-                .Subscribe(_ => RefreshSelectionStyle());
+            System.ObservableExtensions.Subscribe(this.WhenAnyValue(x => x.IsOpenInPianoRoll),_ => RefreshSelectionStyle());
             MessageBus.Current.Listen<ThemeChangedEvent>()
                 .Subscribe(_ => RefreshSelectionStyle());
             MessageBus.Current.Listen<PianoRollOpenPartChangedEvent>()

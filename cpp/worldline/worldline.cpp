@@ -241,50 +241,6 @@ DLL_API int WorldSynthesis(double* const f0, int f0_length,
 
   return y_length;
 }
-<<<<<<< HEAD
-||||||| 29e0e16d
-
-DLL_API int Resample(const SynthRequest* request, float** y) {
-  auto resampler = std::make_unique<worldline::Resampler>(*request);
-  std::vector<double> out = resampler->Resample();
-  *y = new float[out.size()];
-  std::copy(out.begin(), out.end(), *y);
-  return out.size();
-}
-
-DLL_API PhraseSynth* PhraseSynthNew() { return new PhraseSynth(); }
-
-DLL_API void PhraseSynthDelete(PhraseSynth* phrase_synth) {
-  delete phrase_synth;
-}
-
-DLL_API void PhraseSynthAddRequest(PhraseSynth* phrase_synth,
-                                   const SynthRequest* request, double pos_ms,
-                                   double skip_ms, double length_ms,
-                                   double fade_in_ms, double fade_out_ms,
-                                   worldline::LogCallback logCallback) {
-  phrase_synth->AddRequest(*request, pos_ms, skip_ms, length_ms, fade_in_ms,
-                           fade_out_ms, logCallback);
-}
-
-DLL_API void PhraseSynthSetCurves(PhraseSynth* phrase_synth, double* f0,
-                                  double* gender, double* tension,
-                                  double* breathiness, double* voicing,
-                                  int length,
-                                  worldline::LogCallback logCallback) {
-  phrase_synth->SetCurves(f0, gender, tension, breathiness, voicing, length,
-                          logCallback);
-}
-
-DLL_API int PhraseSynthSynth(PhraseSynth* phrase_synth, float** y,
-                             worldline::LogCallback logCallback) {
-  std::vector<double> samples = phrase_synth->Synth(logCallback);
-  int yLength = samples.size();
-  *y = new float[samples.size()];
-  std::copy(samples.begin(), samples.end(), *y);
-  return yLength;
-}
-=======
 
 static void CheapTrickF0In(const AnalysisConfig* config,
                            std::vector<double>& samples,
@@ -407,4 +363,3 @@ DLL_API int WorldSynthesisContinuousNoise(
   }
   return y_length;
 }
->>>>>>> upstream/master

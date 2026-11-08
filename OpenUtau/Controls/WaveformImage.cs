@@ -1,8 +1,10 @@
+﻿using System;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
 using OpenUtau.App.ViewModels;
 using OpenUtau.Core;
+using OpenUtau.Core.Ustx;
 
 namespace OpenUtau.App.Controls {
     /// <summary>
@@ -11,8 +13,6 @@ namespace OpenUtau.App.Controls {
     /// rendered audio.
     /// </summary>
     class WaveformImage : Control {
-        const float DiffSingerAmplitudeGain = 1.2f;
-        const float VerticalFill = 0.92f;
         public static readonly DirectProperty<WaveformImage, double> TickWidthProperty =
             AvaloniaProperty.RegisterDirect<WaveformImage, double>(
                 nameof(TickWidth),
@@ -54,6 +54,11 @@ namespace OpenUtau.App.Controls {
         private float[] sampleData = new float[0];
 
         public WaveformImage() {
+            // The projection payload is not read here; deliveries mean new audio.
+            OpenUtau.Core.Render.RenderView.Inst.Observe(_ => {
+                envelope.Invalidate();
+                InvalidateVisual();
+            });
         }
 
         protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change) {
@@ -73,7 +78,68 @@ namespace OpenUtau.App.Controls {
                 !ShowWaveform || viewModel.TickWidth <= ViewConstants.PianoRollTickWidthShowDetails) {
                 return;
             }
+            var project = viewModel.Project;
+            var part = viewModel.Part;
+            double scale = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1;
+            // Everything below is in device pixels.
+            int width = (int)Math.Ceiling(Bounds.Width * scale);
+            double height = Math.Round(Bounds.Height * scale);
+            if (project == null || part == null || width <= 0 || height <= 0) {
+                return;
+            }
+            double offsetPx = viewModel.TickOffset * viewModel.TickWidth * scale;
+            int firstColumn = (int)Math.Floor(offsetPx);
+            envelope.Update(project.timeAxis, part, viewModel.TickOrigin, viewModel.TickWidth * scale,
+                new[] { (0.0, height) }, firstColumn, firstColumn + width + 1, int.MinValue, int.MaxValue,
+                (edges, min, max) => FillColumns(part, edges, min[0], max[0]));
+            envelope.Draw(context, Bounds.Size, scale, Math.Round(-offsetPx), Fill);
+        }
 
+        // The mixed audio of both channels, as one lane.
+        private bool FillColumns(UPart part, double[] edges, float[] columnMin, float[] columnMax) {
+            int columns = edges.Length - 1;
+            int firstSample = Math.Max(0, SampleIndex(edges[0]));
+            int sampleCount = Math.Max(0, SampleIndex(edges[columns]) - firstSample);
+            if (sampleCount == 0) {
+                return false;
+            }
+            if (sampleData.Length < sampleCount) {
+                sampleData = new float[sampleCount];
+            }
+            Array.Clear(sampleData, 0, sampleCount);
+
+            var projection = OpenUtau.Core.Render.RenderView.Inst.Current(part);
+            var phraseView = new (ulong hash, double startMs, double endMs)[projection.Phrases.Count];
+            for (int p = 0; p < projection.Phrases.Count; ++p) {
+                var view = projection.Phrases[p];
+                phraseView[p] = (view.Hash, view.Layout.StartMs, view.Layout.EndMs);
+            }
+            // Only phrases whose pcm has rendered appear, so a part still
+            // rendering draws only what has finished.
+            var planner = OpenUtau.Core.PlaybackManager.Inst.MixPlanner;
+            if (!MixPlanner.TryGetPartPlacements(planner, part, phraseView, out var pcmList)) {
+                return false;
+            }
+            var slots = new OpenUtau.Core.SignalChain.SampleSlot[pcmList.Count];
+            for (int i = 0; i < pcmList.Count; ++i) {
+                var p = pcmList[i];
+                slots[i] = new OpenUtau.Core.SignalChain.SampleSlot(
+                    p.posMs, p.durMs, 0, p.channels, p.pcm,
+                    OpenUtau.Core.SignalChain.SlotState.Ready);
+            }
+            var source = new OpenUtau.Core.SignalChain.SlotMixSource();
+            source.SetSlots(slots);
+            source.Mix(firstSample, sampleData, 0, sampleCount);
+
+            // NaN where no phrase has audio. Silence inside a phrase still draws.
+            float lastValue = 0;
+            for (int i = 0; i < columns; ++i) {
+                double fromMs = edges[i], toMs = edges[i + 1];
+                bool covered = false;
+                foreach (var phrase in phraseView) {
+                    if (phrase.endMs > fromMs && phrase.startMs < toMs) {
+                        covered = true;
+                        break;
                     }
                 }
                 int s0 = Math.Clamp(SampleIndex(fromMs) - firstSample, 0, sampleCount);
@@ -102,8 +168,12 @@ namespace OpenUtau.App.Controls {
                 columnMin[i] = min;
                 columnMax[i] = max;
             }
+            return true;
         }
 
+        // Index of the interleaved sample at a song time, as the mix lays them out.
+        private static int SampleIndex(double ms) {
+            return (int)(ms * SampleRate / 1000) * Channels;
         }
     }
 }

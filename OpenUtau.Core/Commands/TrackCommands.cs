@@ -1,8 +1,7 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using OpenUtau.Api;
-using OpenUtau.Core.Format;
 using OpenUtau.Core.Ustx;
 
 namespace OpenUtau.Core {
@@ -79,77 +78,36 @@ namespace OpenUtau.Core {
         }
         public override string ToString() => "Move track";
         public override void Execute() {
-            if (index < 0 || index + 1 >= project.tracks.Count) {
-                return;
-            }
             project.tracks.Reverse(index, 2);
             UpdateTrackNo();
         }
         public override void Unexecute() {
-            if (index < 0 || index + 1 >= project.tracks.Count) {
-                return;
-            }
             project.tracks.Reverse(index, 2);
             UpdateTrackNo();
         }
     }
 
-    public class ReorderTrackCommand : TrackCommand {
-        readonly int oldIndex;
-        readonly int newIndex;
-
-        public ReorderTrackCommand(UProject project, UTrack track, int newIndex) {
+    public class SetTrackNoCommand : TrackCommand {
+        public readonly int oldIndex;
+        public readonly int newIndex;
+        public SetTrackNoCommand(UProject project, UTrack track, int idx) {
             this.project = project;
             this.track = track;
+            newIndex = idx;
             oldIndex = track.TrackNo;
-            this.newIndex = newIndex;
         }
-
-        public override string ToString() => "Reorder track";
-        public override void Execute() => MoveTo(newIndex);
-        public override void Unexecute() => MoveTo(oldIndex);
-
-        void MoveTo(int targetIndex) {
-            if (targetIndex < 0 || targetIndex >= project.tracks.Count) {
-                return;
-            }
-            int currentIndex = track.TrackNo;
-            if (currentIndex == targetIndex) {
-                return;
-            }
-            project.tracks.RemoveAt(currentIndex);
-            project.tracks.Insert(targetIndex, track);
+        public override string ToString() => "Set track number";
+        public override void Execute() {
+            UTrack item = project.tracks[oldIndex];
+            project.tracks.RemoveAt(oldIndex);
+            project.tracks.Insert(newIndex, item);
             UpdateTrackNo();
         }
-    }
-
-    public class TrackChangeSettingsCommand : TrackCommand {
-        readonly bool newMute;
-        readonly bool oldMute;
-        readonly double newVolume;
-        readonly double oldVolume;
-        readonly double newPan;
-        readonly double oldPan;
-        public TrackChangeSettingsCommand(UProject project, UTrack track, bool mute, double volume, double pan) {
-            this.project = project;
-            this.track = track;
-            newMute = mute;
-            newVolume = volume;
-            newPan = pan;
-            oldMute = track.Mute;
-            oldVolume = track.Volume;
-            oldPan = track.Pan;
-        }
-        public override string ToString() => "Change track settings";
-        public override void Execute() {
-            track.Mute = newMute;
-            track.Volume = newVolume;
-            track.Pan = newPan;
-        }
         public override void Unexecute() {
-            track.Mute = oldMute;
-            track.Volume = oldVolume;
-            track.Pan = oldPan;
+            UTrack item = project.tracks[newIndex];
+            project.tracks.RemoveAt(newIndex);
+            project.tracks.Insert(oldIndex, item);
+            UpdateTrackNo();
         }
     }
 
@@ -229,100 +187,31 @@ namespace OpenUtau.Core {
         }
     }
 
-    public class TrackChangeMixFxCommand : TrackCommand {
-        readonly UMixFx? newMixFx;
-        readonly UMixFx? oldMixFx;
-
-        public TrackChangeMixFxCommand(UProject project, UTrack track, UMixFx? newMixFx) {
-            this.project = project;
-            this.track = track;
-            this.newMixFx = newMixFx?.Clone();
-            oldMixFx = track.MixFx?.Clone();
+    public class TrackChangeSettingsCommand : TrackCommand {
+        readonly bool newMute, oldMute; readonly double newVolume, oldVolume, newPan, oldPan;
+        public TrackChangeSettingsCommand(UProject project, UTrack track, bool mute, double volume, double pan) {
+            this.project = project; this.track = track; newMute = mute; newVolume = volume; newPan = pan; oldMute = track.Mute; oldVolume = track.Volume; oldPan = track.Pan;
         }
-
-        public override string ToString() => "Change mix fx";
-
-        public override void Execute() {
-            track.MixFx = newMixFx?.Clone();
-        }
-
-        public override void Unexecute() {
-            track.MixFx = oldMixFx?.Clone();
-        }
+        public override string ToString() => "Change track settings";
+        public override void Execute() { track.Mute = newMute; track.Volume = newVolume; track.Pan = newPan; }
+        public override void Unexecute() { track.Mute = oldMute; track.Volume = oldVolume; track.Pan = oldPan; }
     }
-
-    /// <summary>
-    /// Set or clear a single per-track expression default override (empty baseline).
-    /// </summary>
     public class SetTrackExpressionDefaultCommand : TrackCommand {
-        readonly string abbr;
-        readonly float? newValue;
-        readonly float? oldValue;
-        public string Abbr => abbr;
-        public string Key => abbr;
-
+        readonly string abbr; readonly float? newValue, oldValue;
         public SetTrackExpressionDefaultCommand(UProject project, UTrack track, string abbr, float? newValue, float? oldValue = null) {
-            this.project = project;
-            this.track = track;
-            this.abbr = Util.ExpressionDefaultResolver.NormalizeAbbr(abbr);
-            this.newValue = newValue;
-            this.oldValue = oldValue ?? Util.ExpressionDefaultResolver.GetTrackOverride(track, this.abbr);
+            this.project = project; this.track = track; this.abbr = OpenUtau.Core.Util.ExpressionDefaultResolver.NormalizeAbbr(abbr);
+            this.newValue = newValue; this.oldValue = oldValue ?? OpenUtau.Core.Util.ExpressionDefaultResolver.GetTrackOverride(track, this.abbr);
         }
-
         public override string ToString() => $"Set track expression default {abbr.ToUpperInvariant()}";
-
-        public override void Execute() {
-            Util.ExpressionDefaultResolver.ApplyTrackOverride(project, track, abbr, newValue);
-            SyncVoiceColorExpIfClr();
-        }
-
-        public override void Unexecute() {
-            Util.ExpressionDefaultResolver.ApplyTrackOverride(project, track, abbr, oldValue);
-            SyncVoiceColorExpIfClr();
-        }
-
-        void SyncVoiceColorExpIfClr() {
-            if (abbr != Format.Ustx.CLR || track.VoiceColorExp == null) {
-                return;
-            }
-            float effective = Util.ExpressionDefaultResolver.GetEffectiveDefault(project, track, abbr);
-            track.VoiceColorExp.CustomDefaultValue = Math.Clamp(
-                effective, track.VoiceColorExp.min, track.VoiceColorExp.max);
-        }
+        public override void Execute() { OpenUtau.Core.Util.ExpressionDefaultResolver.ApplyTrackOverride(project, track, abbr, newValue); SyncClr(); }
+        public override void Unexecute() { OpenUtau.Core.Util.ExpressionDefaultResolver.ApplyTrackOverride(project, track, abbr, oldValue); SyncClr(); }
+        void SyncClr(){ if(abbr!=Format.Ustx.CLR||track.VoiceColorExp==null) return; float e=OpenUtau.Core.Util.ExpressionDefaultResolver.GetEffectiveDefault(project,track,abbr); track.VoiceColorExp.CustomDefaultValue=Math.Clamp(e,track.VoiceColorExp.min,track.VoiceColorExp.max); }
     }
-
-    /// <summary>
-    /// Clear all per-track expression default overrides on a track.
-    /// </summary>
     public class ClearTrackExpressionDefaultsCommand : TrackCommand {
         readonly Dictionary<string, float> oldOverrides;
-
-        public ClearTrackExpressionDefaultsCommand(UProject project, UTrack track) {
-            this.project = project;
-            this.track = track;
-            oldOverrides = Util.ExpressionDefaultResolver.CloneOverrides(track);
-        }
-
+        public ClearTrackExpressionDefaultsCommand(UProject project, UTrack track) { this.project=project; this.track=track; oldOverrides=OpenUtau.Core.Util.ExpressionDefaultResolver.CloneOverrides(track); }
         public override string ToString() => "Clear track expression defaults";
-
-        public override void Execute() {
-            Util.ExpressionDefaultResolver.EnsureOverridesDict(track);
-            track.ExpressionDefaultOverrides.Clear();
-            SyncClrFromProject();
-        }
-
-        public override void Unexecute() {
-            track.ExpressionDefaultOverrides = new Dictionary<string, float>(oldOverrides);
-            SyncClrFromProject();
-        }
-
-        void SyncClrFromProject() {
-            if (track.VoiceColorExp == null) {
-                return;
-            }
-            float effective = Util.ExpressionDefaultResolver.GetEffectiveDefault(project, track, Format.Ustx.CLR);
-            track.VoiceColorExp.CustomDefaultValue = Math.Clamp(
-                effective, track.VoiceColorExp.min, track.VoiceColorExp.max);
-        }
+        public override void Execute(){ OpenUtau.Core.Util.ExpressionDefaultResolver.EnsureOverridesDict(track); track.ExpressionDefaultOverrides.Clear(); if(track.VoiceColorExp!=null){ float e=OpenUtau.Core.Util.ExpressionDefaultResolver.GetEffectiveDefault(project,track,Format.Ustx.CLR); track.VoiceColorExp.CustomDefaultValue=Math.Clamp(e,track.VoiceColorExp.min,track.VoiceColorExp.max);} }
+        public override void Unexecute(){ track.ExpressionDefaultOverrides=new Dictionary<string,float>(oldOverrides); if(track.VoiceColorExp!=null){ float e=OpenUtau.Core.Util.ExpressionDefaultResolver.GetEffectiveDefault(project,track,Format.Ustx.CLR); track.VoiceColorExp.CustomDefaultValue=Math.Clamp(e,track.VoiceColorExp.min,track.VoiceColorExp.max);} }
     }
 }

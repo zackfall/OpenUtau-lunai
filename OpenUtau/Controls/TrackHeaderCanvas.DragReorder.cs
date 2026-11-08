@@ -102,7 +102,7 @@ namespace OpenUtau.App.Controls {
                 }
                 if (targetIndex != oldIndex && targetIndex >= 0 && targetIndex < _items.Count) {
                     DocManager.Inst.StartUndoGroup("command.track.order");
-                    DocManager.Inst.ExecuteCmd(new ReorderTrackCommand(DocManager.Inst.Project, dragTrack, targetIndex));
+                    DocManager.Inst.ExecuteCmd(new SetTrackNoCommand(DocManager.Inst.Project, dragTrack, targetIndex));
                     DocManager.Inst.EndUndoGroup();
                 }
             }

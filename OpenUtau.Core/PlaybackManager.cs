@@ -12,6 +12,7 @@ using OpenUtau.Core.SignalChain;
 using OpenUtau.Core.Ustx;
 using OpenUtau.Core.Util;
 using Serilog;
+using System.Collections.Concurrent;
 
 namespace OpenUtau.Core {
     public class SineGenerator : ISampleProvider {
@@ -210,6 +211,12 @@ namespace OpenUtau.Core {
     class PlaybackMix : ISignalSource {
         private readonly ISignalSource masterSource;
         private readonly ISignalSource overlaySource;
+        private volatile bool masterExhausted;
+
+        // True once the master source stops producing audio, release tails included.
+        // The overlay can always produce sound, so the mix itself never reports
+        // end-of-stream and playback has to be stopped by play position instead.
+        public bool MasterExhausted => masterExhausted;
 
         public PlaybackMix(ISignalSource masterSource, ISignalSource overlaySource) {
             this.masterSource = masterSource;
@@ -222,8 +229,9 @@ namespace OpenUtau.Core {
 
         public int Mix(int position, float[] buffer, int offset, int count) {
             int masterPos = masterSource.Mix(position, buffer, offset, count);
-            overlaySource.Mix(position, buffer, offset, count);
-            return masterPos;
+            int overlayPos = overlaySource.Mix(position, buffer, offset, count);
+            masterExhausted = masterPos <= position;
+            return Math.Max(masterPos, overlayPos);
         }
     }
 
@@ -239,6 +247,7 @@ namespace OpenUtau.Core {
 
             toneGenerator = new ToneGenerator();
             metronomeEngine = new MetronomeEngine();
+            metronomeEngine.SetEnabled(Preferences.Default.Metronome);
             editingMix = new MasterAdapter(toneGenerator);
         }
 
@@ -256,34 +265,53 @@ namespace OpenUtau.Core {
 
         double startMs;
         int playbackStartTick;
-        /// <summary>
-        /// While the master mix is holding for unready audio, freeze the playhead
-        /// clock so GetPosition/Waited races cannot jitter it forward/back.
-        /// </summary>
         double? playheadHoldMs;
         public int StartTick => DocManager.Inst.Project.timeAxis.MsPosToTickPos(startMs);
         /// <summary>Tick where the current playback session started (for lock start time on pause).</summary>
         public int PlaybackStartTick => playbackStartTick;
-        // One cancellation source per render lane so starting playback, pre-rendering
-        // or exporting no longer cancel each other in flight.
+        // Playback and pre-render share one lane: both publish into MixPlanner, so a
+        // newer pass simply takes over from the older one. Export renders into its own
+        // planner and keeps its own lane.
         CancellationTokenSource renderCancellation;
         CancellationTokenSource preRenderCancellation;
         CancellationTokenSource exportCancellation;
-        bool pausedWithMix;
-        int playbackRenderGeneration;
-        bool playbackMixDirty;
         UVoicePart preRenderFocusPart;
         int preRenderFocusTick = -1;
 
-        // Loop playback state
-        private int loopStartTick = 0;
-        private int loopEndTick = -1;
+        // Interactive ONNX edits share the render lane's session (and DirectML) lock, so a
+        // pre-render pass in flight makes them wait one audio phrase render per phrase.
+        readonly object preRenderGate = new object();
+        int preRenderHolders;
+        bool preRenderDeferred;
+
+        // Active playback range captured when playback starts. Its end remains a stop
+        // boundary even when looping is disabled.
+        private int playbackRangeStartTick = 0;
+        private int playbackRangeEndTick = -1;
+        // Tick where the current playback must end, -1 when unbounded (empty project).
+        private int playbackEndTick = -1;
+        private PlaybackMix playbackMix;
+        private bool loopProjectOnPlaybackEnd;
 
         public Audio.IAudioOutput AudioOutput { get; set; } = new Audio.DummyAudioOutput();
         public bool OutputActive => AudioOutput.PlaybackState == PlaybackState.Playing;
         public bool StartingToPlay { get; private set; }
         public bool PlayingMaster { get; private set; }
-        public bool MetronomeEnabled { get; private set; }
+        public bool LoopPlayback { get; set; }
+        public bool Metronome {
+            get => metronomeEngine.Enabled;
+            set {
+                if (metronomeEngine.Enabled == value) {
+                    return;
+                }
+                Preferences.Default.Metronome = value;
+                Preferences.Save();
+                metronomeEngine.SetEnabled(
+                    value,
+                    PlayingMaster ? DocManager.Inst.Project.timeAxis : null,
+                    PlayingMaster ? DocManager.Inst.playPosTick : -1);
+            }
+        }
 
         public void PlayTestSound() {
             masterMix = null;
@@ -322,7 +350,62 @@ namespace OpenUtau.Core {
             return GetMetronomePreviewGain();
         }
 
+        public void CancelActiveRender() {
+            renderCancellation?.Cancel();
+            preRenderCancellation?.Cancel();
+            StartingToPlay = false;
+            if (masterMix != null || PlayingMaster ||
+                AudioOutput.PlaybackState == PlaybackState.Playing ||
+                AudioOutput.PlaybackState == PlaybackState.Paused) {
+                StopPlayback();
+            }
+            DocManager.Inst.ExecuteCmd(new ProgressBarNotification(0, string.Empty));
+        }
+
+        public bool MetronomeEnabled {
+            get => Metronome;
+            set => Metronome = value;
+        }
+
+        public void PlayMetronome(bool enabled) {
+            MetronomeEnabled = enabled;
+        }
+
+        public bool TryGetSmoothPlayTick(out double tick) {
+            tick = 0;
+            if (AudioOutput == null || AudioOutput.PlaybackState != PlaybackState.Playing || !PlayingMaster) {
+                return false;
+            }
+            var currentMasterMix = masterMix;
+            if (currentMasterMix == null) {
+                return false;
+            }
+            double currentMs = GetPlayheadClockMs(currentMasterMix);
+            var timeAxis = DocManager.Inst.Project.timeAxis;
+            int baseTick = timeAxis.MsPosToTickPos(currentMs);
+            double tickStartMs = timeAxis.TickPosToMsPos(baseTick);
+            double tickEndMs = timeAxis.TickPosToMsPos(baseTick + 1);
+            double span = tickEndMs - tickStartMs;
+            double frac = span > 1e-6 ? Math.Clamp((currentMs - tickStartMs) / span, 0, 1) : 0;
+            tick = baseTick + frac;
+            return true;
+        }
+
+        double GetPlayheadClockMs(MasterAdapter mix) {
+            double ms = (AudioOutput.GetPosition() / sizeof(float) - mix.Waited / 2) * 1000.0 / 44100;
+            double currentMs = startMs + ms;
+            if (mix.IsWaiting) {
+                playheadHoldMs ??= currentMs;
+                return playheadHoldMs.Value;
+            }
+            playheadHoldMs = null;
+            return currentMs;
+        }
+
         public void PlayTone(double freq) {
+            if (!Core.Util.Preferences.Default.PlaySineWhenNoSinger) {
+                return;
+            }
             toneGenerator.StartTone(freq);
 
             // If nothing is playing, start editing mix
@@ -362,17 +445,23 @@ namespace OpenUtau.Core {
             } else {
                 int rangeStart = DocManager.Inst.rangeStartTick;
                 int rangeEnd = DocManager.Inst.rangeEndTick;
-                if (rangeEnd > rangeStart) {
+                if (endTick == -1 && rangeEnd > rangeStart) {
                     int playPos = DocManager.Inst.playPosTick;
-                    loopStartTick = rangeStart;
-                    loopEndTick = rangeEnd;
+                    playbackRangeStartTick = rangeStart;
+                    playbackRangeEndTick = rangeEnd;
+                    loopProjectOnPlaybackEnd = false;
                     Play(
                         DocManager.Inst.Project,
-                        tick: tick == -1 ? ((playPos >= rangeStart && playPos < rangeEnd) ? playPos : rangeStart) : tick,
-                        endTick: endTick == -1 ? rangeEnd : endTick,
+                        tick: tick == -1
+                            ? ((playPos >= rangeStart && playPos < rangeEnd) ? playPos : rangeStart)
+                            : tick,
+                        endTick: rangeEnd,
                         trackNo: trackNo);
                 } else {
-                    loopEndTick = -1;
+                    playbackRangeEndTick = -1;
+                    // Explicit bounds are used for one-shot previews such as Alt+Space
+                    // on selected notes; they must not fall through to project looping.
+                    loopProjectOnPlaybackEnd = endTick == -1;
                     Play(
                         DocManager.Inst.Project,
                         tick: tick == -1 ? DocManager.Inst.playPosTick : tick,
@@ -383,119 +472,78 @@ namespace OpenUtau.Core {
         }
 
         public void Play(UProject project, int tick, int endTick = -1, int trackNo = -1) {
-            bool forceFreshRender = Preferences.Default.ExperimentalInvalidatePlaybackOnEdit && playbackMixDirty;
-            if (!forceFreshRender && pausedWithMix && masterMix != null) {
-                var timeAxis = project.timeAxis;
-                startMs = timeAxis.TickPosToMsPos(tick);
-                // Keep playbackStartTick: warm resume is the same play session
-                // (LockStartTime 1/2 must still jump back to where Play began).
-                masterMix.SetPosition((int)(startMs * 44100 / 1000) * 2);
-                pausedWithMix = false;
+            playbackEndTick = endTick == -1 ? project.EndTick : endTick;
+            if (AudioOutput.PlaybackState == PlaybackState.Paused) {
                 PlayingMaster = true;
-                StartingToPlay = false;
-                metronomeEngine.StartPlayback(timeAxis, tick);
-                AudioOutput.Stop();
-                AudioOutput.Init(masterMix);
+                metronomeEngine.StartPlayback(project.timeAxis, DocManager.Inst.playPosTick);
                 AudioOutput.Play();
+                // No pre-render here: the pass deferred during the pause must not replace the
+                // session this resume is reading from. It runs when playback stops.
                 return;
-            }
-            if (!forceFreshRender && AudioOutput.PlaybackState == PlaybackState.Paused) {
-                var timeAxis = project.timeAxis;
-                startMs = timeAxis.TickPosToMsPos(tick);
-                // Seek the paused mix to the requested tick — required when
-                // LockStartTime moved the playhead back while audio stayed paused.
-                if (masterMix != null) {
-                    masterMix.SetPosition((int)(startMs * 44100 / 1000) * 2);
-                }
-                PlayingMaster = true;
-                metronomeEngine.StartPlayback(timeAxis, tick);
-                AudioOutput.Play();
-                return;
-            }
-            if (forceFreshRender) {
-                pausedWithMix = false;
-                masterMix = null;
             }
             AudioOutput.Stop();
-            playbackMixDirty = false;
-            Render(project, tick, endTick, trackNo);
             StartingToPlay = true;
             PlayingMaster = true;
+            Render(project, tick, endTick, trackNo);
         }
 
         public void StopPlayback() {
-            pausedWithMix = false;
             AudioOutput.Stop();
+            StartingToPlay = false;
             masterMix = null;
             PlayingMaster = false;
             metronomeEngine.Stop();
-            loopEndTick = -1;
-            playheadHoldMs = null;
+            playbackRangeEndTick = -1;
+            playbackEndTick = -1;
+            playbackMix = null;
+            loopProjectOnPlaybackEnd = false;
+            // A pass deferred while playback was paused has nothing to protect any more.
+            RunDeferredPreRender();
         }
 
         public void PausePlayback() {
-            if (Preferences.Default.UseSystemDefaultAudioDevice && masterMix != null) {
-                var timeAxis = DocManager.Inst.Project.timeAxis;
-                int tick = DocManager.Inst.playPosTick;
-                startMs = timeAxis.TickPosToMsPos(tick);
-                masterMix.SetPosition((int)(startMs * 44100 / 1000) * 2);
-                AudioOutput.Stop();
-                pausedWithMix = true;
-            } else {
-                AudioOutput.Pause();
-            }
+            AudioOutput.Pause();
+            StartingToPlay = false;
             PlayingMaster = false;
             metronomeEngine.Stop();
-            loopEndTick = -1;
-            // "Do nothing": the pause position becomes the next session start.
-            // LockStartTime 1/2 keep the original playbackStartTick for jump-back.
-            if (Preferences.Default.LockStartTime == 0) {
-                playbackStartTick = DocManager.Inst.playPosTick;
-            }
-        }
-
-        public void PlayMetronome(bool enabled) {
-            MetronomeEnabled = enabled;
-            metronomeEngine.SetEnabled(
-                enabled,
-                PlayingMaster ? DocManager.Inst.Project.timeAxis : null,
-                PlayingMaster ? DocManager.Inst.playPosTick : -1);
+            playbackRangeEndTick = -1;
+            loopProjectOnPlaybackEnd = false;
         }
 
         private void StartPlayback(double startMs, MasterAdapter masterAdapter) {
             toneGenerator.EndAllTones();
             this.startMs = startMs;
-            playbackStartTick = StartTick;
-            playheadHoldMs = null;
-            metronomeEngine.StartPlayback(DocManager.Inst.Project.timeAxis, playbackStartTick);
+            metronomeEngine.StartPlayback(DocManager.Inst.Project.timeAxis, StartTick);
             var start = TimeSpan.FromMilliseconds(startMs);
             Log.Information($"StartPlayback at {start}");
             masterMix = masterAdapter;
             AudioOutput.Stop();
             AudioOutput.Init(masterMix);
             AudioOutput.Play();
+            // Cleared only after playback actually starts. Until then UpdatePlayPos
+            // would see Stopped + PlayingMaster and stop the playback it is starting.
+            StartingToPlay = false;
         }
 
         private void Render(UProject project, int tick, int endTick, int trackNo) {
-            int sessionGeneration = playbackRenderGeneration;
             Task.Run(() => {
                 try {
+                    Task.Factory.StartNew(() => {
+                        DocManager.Inst.ExecuteCmd(new WaveformReadyNotification());
+                    }, CancellationToken.None, TaskCreationOptions.None, DocManager.Inst.MainScheduler);
+
                     RenderEngine engine = new RenderEngine(project, startTick: tick, endTick: endTick, trackNo: trackNo);
-                    var result = engine.RenderMixdown(
-                        DocManager.Inst.MainScheduler, ref renderCancellation, wait: false, applyMixFx: true, planner: MixPlanner);
-                    if (sessionGeneration != playbackRenderGeneration) {
-                        return;
-                    }
-                    var playbackAdapter = new MasterAdapter(new PlaybackMix(result.Item1, metronomeEngine));
+                    var result = engine.RenderMixdown(DocManager.Inst.MainScheduler, ref renderCancellation, wait: false, applyMixFx: true, planner: MixPlanner);
+                    playbackMix = new PlaybackMix(result.Item1, metronomeEngine);
+                    var playbackAdapter = new MasterAdapter(playbackMix);
                     // Hold mode: wait for pending phrases (today's behaviour), except
                     // in loop mode where a pending phrase must not stall the clock.
                     // Failed phrases never hold in either mode.
-                    playbackAdapter.HoldWhenUnready = loopEndTick <= 0;
+                    playbackAdapter.HoldWhenUnready = !LoopPlayback;
                     playbackAdapter.SetPosition((int)(project.timeAxis.TickPosToMsPos(tick) * 44100 / 1000) * 2);
                     faders = result.Item2;
-                    PlayingMaster = true;
                     StartPlayback(project.timeAxis.TickPosToMsPos(tick), playbackAdapter);
-                    StartingToPlay = false;
+
                     Task.Factory.StartNew(() => {
                         DocManager.Inst.ExecuteCmd(new WaveformReadyNotification());
                     }, CancellationToken.None, TaskCreationOptions.None, DocManager.Inst.MainScheduler);
@@ -510,125 +558,52 @@ namespace OpenUtau.Core {
             });
         }
 
-        void InvalidatePlaybackForProjectChange() {
-            if (!Preferences.Default.ExperimentalInvalidatePlaybackOnEdit) {
-                return;
-            }
-            playbackMixDirty = true;
-            bool isActivelyPlaying = PlayingMaster
-                && AudioOutput.PlaybackState == PlaybackState.Playing;
-            if (isActivelyPlaying) {
-                return;
-            }
-            playbackRenderGeneration++;
-            if (masterMix != null || pausedWithMix
-                || AudioOutput.PlaybackState == PlaybackState.Paused
-                || StartingToPlay) {
-                StopPlayback();
-            }
-            renderCancellation?.Cancel();
-        }
-
-        /// <summary>
-        /// After solo/mute, VolumeChange already retargets live faders. Never stop
-        /// the transport here — that caused a hitch when switching solo between tracks.
-        /// Only drop a <em>paused</em> warm mix when muted tracks may be missing from
-        /// the session (<see cref="Preferences.SerializablePreferences.SkipRenderingMutedTracks"/>),
-        /// so the next Play rebuilds with the unmuted tracks included.
-        /// </summary>
-        void DiscardWarmMixAfterSoloMuteChange() {
-            if (PlayingMaster || StartingToPlay) {
-                return;
-            }
-            if (!pausedWithMix && masterMix == null) {
-                return;
-            }
-            if (!Preferences.Default.SkipRenderingMutedTracks) {
-                // Warm mix faders were already corrected via VolumeChange; keep it.
-                return;
-            }
-            pausedWithMix = false;
-            masterMix = null;
-            faders = null;
-        }
-
-        /// <summary>
-        /// Cancels in-flight playback/pre-render work and clears the progress bar.
-        /// Does not cancel export. Also drops any incomplete playback mix so
-        /// HoldWhenUnready cannot hang forever on phrases that will never arrive;
-        /// the next Play starts a fresh render pass.
-        /// </summary>
-        public void CancelActiveRender() {
-            renderCancellation?.Cancel();
-            preRenderCancellation?.Cancel();
-            playbackRenderGeneration++;
-            StartingToPlay = false;
-            // Incomplete mix after a cancelled RenderRequests would wait forever
-            // under HoldWhenUnready; warm-resume would replay that dead mix.
-            if (masterMix != null || pausedWithMix || PlayingMaster
-                || AudioOutput.PlaybackState == PlaybackState.Playing
-                || AudioOutput.PlaybackState == PlaybackState.Paused) {
-                StopPlayback();
-            }
-            DocManager.Inst.ExecuteCmd(new ProgressBarNotification(0, string.Empty));
-        }
-
         public void UpdatePlayPos() {
-            if (AudioOutput != null && AudioOutput.PlaybackState == PlaybackState.Playing && PlayingMaster) {
-                var currentMasterMix = masterMix;
-                if (currentMasterMix == null) {
+            if (AudioOutput != null && AudioOutput.PlaybackState == PlaybackState.Playing && PlayingMaster && masterMix != null) {
+
+                double ms = (AudioOutput.GetPosition() / sizeof(float) - masterMix.Waited / 2) * 1000.0 / 44100;
+                int tick = DocManager.Inst.Project.timeAxis.MsPosToTickPos(startMs + ms);
+                if (playbackRangeEndTick > 0 && tick >= playbackRangeEndTick) {
+                    HandlePlaybackBoundary(hasPlaybackRange: true);
                     return;
                 }
-                double currentMs = GetPlayheadClockMs(currentMasterMix);
-                var timeAxis = DocManager.Inst.Project.timeAxis;
-                int tick = timeAxis.MsPosToTickPos(currentMs);
-                if (loopEndTick > 0 && tick >= loopEndTick) {
-                    Play(DocManager.Inst.Project, tick: loopStartTick, endTick: loopEndTick);
+                if (playbackRangeEndTick <= 0 &&
+                    playbackEndTick > 0 &&
+                    tick >= playbackEndTick &&
+                    (playbackMix == null || playbackMix.MasterExhausted)) {
+                    HandlePlaybackBoundary(hasPlaybackRange: false);
                     return;
                 }
-                DocManager.Inst.ExecuteCmd(new SetPlayPosTickNotification(tick, currentMasterMix.IsWaiting));
-            } else if (AudioOutput != null && AudioOutput.PlaybackState == PlaybackState.Stopped && PlayingMaster) {
-                if (loopEndTick > 0) {
-                    Play(DocManager.Inst.Project, tick: loopStartTick, endTick: loopEndTick);
-                    return;
-                }
+                DocManager.Inst.ExecuteCmd(new SetPlayPosTickNotification(tick, masterMix.IsWaiting));
+            } else if (AudioOutput != null &&
+                AudioOutput.PlaybackState == PlaybackState.Stopped &&
+                PlayingMaster &&
+                !StartingToPlay) {
+                HandlePlaybackBoundary(hasPlaybackRange: playbackRangeEndTick > 0);
             }
         }
 
-        /// <summary>Fractional project tick from the audio clock for smooth UI scrolling.</summary>
-        public bool TryGetSmoothPlayTick(out double tick) {
-            tick = 0;
-            if (AudioOutput == null || AudioOutput.PlaybackState != PlaybackState.Playing || !PlayingMaster) {
-                return false;
+        private void HandlePlaybackBoundary(bool hasPlaybackRange) {
+            if (LoopPlayback) {
+                if (hasPlaybackRange) {
+                    Play(
+                        DocManager.Inst.Project,
+                        tick: playbackRangeStartTick,
+                        endTick: playbackRangeEndTick);
+                    return;
+                }
+                if (loopProjectOnPlaybackEnd && DocManager.Inst.Project.EndTick > 0) {
+                    Play(DocManager.Inst.Project, tick: 0);
+                    return;
+                }
             }
-            var currentMasterMix = masterMix;
-            if (currentMasterMix == null) {
-                return false;
+            if (hasPlaybackRange) {
+                int endTick = playbackRangeEndTick;
+                StopPlayback();
+                DocManager.Inst.ExecuteCmd(new SetPlayPosTickNotification(endTick));
+            } else {
+                StopPlayback();
             }
-            double currentMs = GetPlayheadClockMs(currentMasterMix);
-            var timeAxis = DocManager.Inst.Project.timeAxis;
-            int baseTick = timeAxis.MsPosToTickPos(currentMs);
-            double tickStartMs = timeAxis.TickPosToMsPos(baseTick);
-            double tickEndMs = timeAxis.TickPosToMsPos(baseTick + 1);
-            double span = tickEndMs - tickStartMs;
-            double frac = span > 1e-6 ? Math.Clamp((currentMs - tickStartMs) / span, 0, 1) : 0;
-            tick = baseTick + frac;
-            return true;
-        }
-
-        /// <summary>
-        /// Playback clock in project ms. While the mix holds for render, reuse the
-        /// first held sample so the playhead freezes instead of jittering.
-        /// </summary>
-        double GetPlayheadClockMs(MasterAdapter mix) {
-            double ms = (AudioOutput.GetPosition() / sizeof(float) - mix.Waited / 2) * 1000.0 / 44100;
-            double currentMs = startMs + ms;
-            if (mix.IsWaiting) {
-                playheadHoldMs ??= currentMs;
-                return playheadHoldMs.Value;
-            }
-            playheadHoldMs = null;
-            return currentMs;
         }
 
         public static float DecibelToVolume(double db) {
@@ -643,8 +618,7 @@ namespace OpenUtau.Core {
                     // A throwaway planner: the export session must not clobber a live
                     // playback session on the shared planner.
                     var planner = new MixPlanner();
-                    var projectMix = engine.RenderMixdown(
-                        DocManager.Inst.MainScheduler, ref exportCancellation, wait: true, applyMixFx: true, planner).Item1;
+                    var projectMix = engine.RenderMixdown(DocManager.Inst.MainScheduler, ref exportCancellation, wait: true, applyMixFx: true, planner).Item1;
                     DocManager.Inst.ExecuteCmd(new ProgressBarNotification(0, $"Exporting to {exportPath}."));
 
                     CheckFileWritable(exportPath);
@@ -704,13 +678,96 @@ namespace OpenUtau.Core {
             }
         }
 
+        /// <summary>
+        /// Keeps the background pre-render off the ONNX locks until the token is disposed:
+        /// the pass in flight is cancelled and a fresh one is scheduled on release.
+        /// </summary>
+        public IDisposable HoldPreRender() {
+            lock (preRenderGate) {
+                preRenderHolders++;
+                // A pass this gate cancels is owed a replacement. A paused playback session
+                // keeps its own task, and with nothing in flight there is nothing to restart.
+                if (!PlayingMaster && playbackMix == null && renderCancellation != null) {
+                    preRenderDeferred = true;
+                    CancelPreRender(renderCancellation);
+                }
+            }
+            return new PreRenderHold(this);
+        }
+
+        /// <summary>
+        /// Cancels cooperatively: the render lane checks the token between phrases and before
+        /// each inference, never inside a Run or a session teardown.
+        /// </summary>
+        static void CancelPreRender(CancellationTokenSource? cancellation) {
+            try {
+                cancellation?.Cancel();
+            } catch (ObjectDisposedException) {
+                // A newer pass already replaced and disposed this one.
+            }
+        }
+
+        void ReleasePreRender() {
+            lock (preRenderGate) {
+                if (preRenderHolders > 0) {
+                    preRenderHolders--;
+                }
+            }
+            RunDeferredPreRender();
+        }
+
+        /// <summary>
+        /// Starts the pass a hold or a notification left owed. Only a stopped transport has
+        /// nothing to protect: a live session asks for its own pass through
+        /// <see cref="PreRenderNotification"/>.
+        /// </summary>
+        void RunDeferredPreRender() {
+            lock (preRenderGate) {
+                if (preRenderHolders > 0 || !preRenderDeferred || playbackMix != null) {
+                    return;
+                }
+                preRenderDeferred = false;
+            }
+            if (Preferences.Default.PreRender) {
+                SchedulePreRender();
+            }
+        }
+
+        sealed class PreRenderHold : IDisposable {
+            PlaybackManager owner;
+
+            public PreRenderHold(PlaybackManager owner) {
+                this.owner = owner;
+            }
+
+            public void Dispose() {
+                Interlocked.Exchange(ref owner, null)?.ReleasePreRender();
+            }
+        }
+
         void SchedulePreRender() {
-            Log.Information("SchedulePreRender");
-            var engine = new RenderEngine(
-                DocManager.Inst.Project,
-                focusPart: preRenderFocusPart,
-                focusTick: preRenderFocusTick);
-            engine.PreRenderProject(ref preRenderCancellation, MixPlanner);
+            lock (preRenderGate) {
+                if (preRenderHolders > 0) {
+                    preRenderDeferred = true;
+                    return;
+                }
+                // Starting a pass swaps the cancellation source, and a paused session is still
+                // filling slots whose hashes a new pass would not match. Wait for stop or resume.
+                if (!PlayingMaster && playbackMix != null) {
+                    preRenderDeferred = true;
+                    return;
+                }
+                Log.Information("SchedulePreRender");
+                // While playing, this pass takes over from the playback pass, so it has to
+                // render from the playhead, not from the part being edited.
+                // Install the new cancellation source under the gate too, or a holder arriving
+                // in between would cancel only the old one and leave this pass running.
+                var engine = new RenderEngine(
+                    DocManager.Inst.Project,
+                    focusPart: PlayingMaster ? null : preRenderFocusPart,
+                    focusTick: PlayingMaster ? DocManager.Inst.playPosTick : preRenderFocusTick);
+                engine.PreRenderProject(ref renderCancellation, MixPlanner);
+            }
         }
 
         #region ICmdSubscriber
@@ -718,62 +775,34 @@ namespace OpenUtau.Core {
         public void OnNext(UCommand cmd, bool isUndo) {
             if (cmd is SeekPlayPosTickNotification) {
                 var _cmd = cmd as SeekPlayPosTickNotification;
+                StopPlayback();
                 int tick = _cmd!.playPosTick;
-                bool forceFresh = Preferences.Default.ExperimentalInvalidatePlaybackOnEdit && playbackMixDirty;
-                // Playhead-only seek: keep a warm masterMix (same as Pause) so the next
-                // Play can resume without re-running RenderRequests. StopPlayback only
-                // when there is no mix or the mix is dirty after edits.
-                if (!forceFresh && masterMix != null) {
-                    var timeAxis = DocManager.Inst.Project.timeAxis;
-                    startMs = timeAxis.TickPosToMsPos(tick);
-                    masterMix.SetPosition((int)(startMs * 44100 / 1000) * 2);
-                    AudioOutput.Stop();
-                    pausedWithMix = true;
-                    PlayingMaster = false;
-                    metronomeEngine.Stop();
-                    loopEndTick = -1;
-                    playheadHoldMs = null;
-                } else {
-                    StopPlayback();
-                }
-                playbackStartTick = tick;
                 DocManager.Inst.ExecuteCmd(new SetPlayPosTickNotification(tick, false, _cmd.pause));
             } else if (cmd is VolumeChangeNotification) {
                 var _cmd = cmd as VolumeChangeNotification;
                 if (faders != null && faders.Count > _cmd.TrackNo) {
-                    // Soft-ramp only: instant SetScaleToTarget clicks when solo switches.
                     faders[_cmd.TrackNo].Scale = DecibelToVolume(_cmd.Volume);
                 }
-            } else if (cmd is SoloTrackNotification) {
-                // Solo changes which tracks are effectively muted and which phrases
-                // belong in the mix. Drop any warm paused mix so the next Play
-                // rebuilds faders/slots from current Muted flags.
-                DiscardWarmMixAfterSoloMuteChange();
             } else if (cmd is PanChangeNotification) {
                 var _cmd = cmd as PanChangeNotification;
                 if (faders != null && faders.Count > _cmd!.TrackNo) {
                     faders[_cmd.TrackNo].Pan = (float)_cmd.Pan;
                 }
-            } else if (cmd is TrackChangeMixFxCommand) {
-                // Mix FX are baked into the per-track signal chain created at playback render time.
-                // Simplest correct behavior is to stop playback so the next play recreates the mix with updated FX.
-                StopPlayback();
             } else if (cmd is BpmCommand ||
                 cmd is TimeSignatureCommand ||
                 cmd is AddTempoChangeCommand ||
                 cmd is DelTempoChangeCommand ||
                 cmd is AddTimeSigCommand ||
                 cmd is DelTimeSigCommand) {
-                if (PlayingMaster && MetronomeEnabled) {
+                if (PlayingMaster && Metronome) {
                     metronomeEngine.UpdateSchedule(DocManager.Inst.Project.timeAxis, DocManager.Inst.playPosTick);
                 }
             } else if (cmd is LoadProjectNotification) {
                 StopPlayback();
                 renderCancellation?.Cancel();
-                preRenderCancellation?.Cancel();
                 exportCancellation?.Cancel();
                 MixPlanner.Clear();
-                playbackRenderGeneration++;
+                DocManager.Inst.ExecuteCmd(new WaveformReadyNotification());
                 preRenderFocusPart = null;
                 preRenderFocusTick = -1;
                 DocManager.Inst.ExecuteCmd(new SetPlayPosTickNotification(0));
@@ -786,7 +815,6 @@ namespace OpenUtau.Core {
             } else if (cmd is SetPlayPosTickNotification setPlayPosTick) {
                 preRenderFocusTick = setPlayPosTick.playPosTick;
             } else if (cmd is PreRenderNotification preRender) {
-                InvalidatePlaybackForProjectChange();
                 if (preRender.part is UVoicePart voicePart) {
                     preRenderFocusPart = voicePart;
                 }
@@ -795,8 +823,7 @@ namespace OpenUtau.Core {
                 }
             }
             if (cmd is PreRenderNotification || cmd is LoadProjectNotification) {
-                bool force = cmd is PreRenderNotification pre && pre.force;
-                if (force || Util.Preferences.Default.PreRender) {
+                if (Util.Preferences.Default.PreRender) {
                     SchedulePreRender();
                 }
             }

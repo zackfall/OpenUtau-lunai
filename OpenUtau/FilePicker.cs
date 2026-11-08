@@ -111,9 +111,14 @@ namespace OpenUtau.App {
 
         public async static Task<string?> OpenFile(
             Window window, string titleKey, string? startLocation, params FilePickerFileType[] types) {
-            var location = startLocation == null
-                ? null
-                : await window.StorageProvider.TryGetFolderFromPathAsync(startLocation);
+            IStorageFolder? location = null;
+            if (!string.IsNullOrWhiteSpace(startLocation)) {
+                try {
+                    location = await window.StorageProvider.TryGetFolderFromPathAsync(startLocation);
+                } catch (Exception e) {
+                    Serilog.Log.Warning(e, $"Failed to resolve file picker start location: {startLocation}");
+                }
+            }
         #if MACOS
             // Due to an avalonia bug, we need to call the native API for looking for APP
             if (types.Contains(APP)) {
@@ -181,9 +186,14 @@ namespace OpenUtau.App {
 
         public async static Task<string[]?> OpenFiles(
             Window window, string titleKey, string? startLocation, params FilePickerFileType[] types) {
-            var location = startLocation == null
-                ? null
-                : await window.StorageProvider.TryGetFolderFromPathAsync(startLocation);
+            IStorageFolder? location = null;
+            if (!string.IsNullOrWhiteSpace(startLocation)) {
+                try {
+                    location = await window.StorageProvider.TryGetFolderFromPathAsync(startLocation);
+                } catch (Exception e) {
+                    Serilog.Log.Warning(e, $"Failed to resolve file picker start location: {startLocation}");
+                }
+            }
             var files = await window.StorageProvider.OpenFilePickerAsync(
                 new FilePickerOpenOptions() {
                     Title = ThemeManager.GetString(titleKey),
@@ -207,9 +217,14 @@ namespace OpenUtau.App {
         }
 
         public async static Task<string?> OpenFolder(Window window, string titleKey, string? startLocation) {
-            var location = startLocation == null
-                ? null
-                : await window.StorageProvider.TryGetFolderFromPathAsync(startLocation);
+            IStorageFolder? location = null;
+            if (!string.IsNullOrWhiteSpace(startLocation)) {
+                try {
+                    location = await window.StorageProvider.TryGetFolderFromPathAsync(startLocation);
+                } catch (Exception e) {
+                    Serilog.Log.Warning(e, $"Failed to resolve folder picker start location: {startLocation}");
+                }
+            }
             var dirs = await window.StorageProvider.OpenFolderPickerAsync(
                 new FolderPickerOpenOptions {
                     Title = ThemeManager.GetString(titleKey),
@@ -241,9 +256,14 @@ namespace OpenUtau.App {
 
         public async static Task<string?> SaveFile
             (Window window, string titleKey, string? startLocation, string? filename, params FilePickerFileType[] types) {
-            var location = startLocation == null
-                ? null
-                : await window.StorageProvider.TryGetFolderFromPathAsync(startLocation);
+            IStorageFolder? location = null;
+            if (!string.IsNullOrWhiteSpace(startLocation)) {
+                try {
+                    location = await window.StorageProvider.TryGetFolderFromPathAsync(startLocation);
+                } catch (Exception e) {
+                    Serilog.Log.Warning(e, $"Failed to resolve save file picker start location: {startLocation}");
+                }
+            }
 
             var file = await window.StorageProvider.SaveFilePickerAsync(
                  new FilePickerSaveOptions {

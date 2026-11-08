@@ -2,16 +2,19 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reactive.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
+using NWaves.Signals;
+using OpenUtau.App;
+using OpenUtau.Core;
 using OpenUtau.Core.Ustx;
-using OpenUtau.Core.Util;
 using ReactiveUI;
-using ReactiveUI.Primitives;
 using Serilog;
 
 namespace OpenUtau.App.Controls {
@@ -133,16 +136,16 @@ namespace OpenUtau.App.Controls {
 
         public readonly UPart part;
         private readonly PartsCanvas partsCanvas;
+        private readonly Pen notePen = new Pen(Brushes.White, 3);
         private readonly Pen fadePen = new Pen(Brushes.White);
         private List<IDisposable> unbinds = new List<IDisposable>();
-        private static readonly IBrush waveformFill = new SolidColorBrush(Color.FromArgb(ContentAlpha, 255, 255, 255));
-        private readonly WaveformEnvelope waveform = new WaveformEnvelope();
-
-        private (RenderPhrase phrase, bool rendered)[] phraseBlocks = [];
+        private WriteableBitmap? bitmap;
+        private int[] bitmapData;
 
         public PartControl(UPart part, PartsCanvas canvas) {
             this.part = part;
             partsCanvas = canvas;
+            bitmapData = new int[0];
             pointGeometry = new EllipseGeometry(new Rect(0, 0, 6, 6));
 
             unbinds.Add(this.Bind(TickWidthProperty, canvas.GetObservable(PartsCanvas.TickWidthProperty)));
@@ -169,10 +172,6 @@ namespace OpenUtau.App.Controls {
                     }
                 }, CancellationToken.None, TaskContinuationOptions.None, scheduler);
             }
-
-            this.PointerMoved += (o, e) => PointerChanged(e.GetPosition(this));
-            this.PointerEntered += (o, e) => PointerChanged(e.GetPosition(this));
-            this.PointerExited += (_, _) => PianoRollViewportHovered = false;
         }
 
         protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change) {
@@ -182,8 +181,14 @@ namespace OpenUtau.App.Controls {
                 change.Property == TickWidthProperty) {
                 SetPosition();
             }
+            if (change.Property == TickOffsetProperty ||
+                change.Property == ViewWidthProperty ||
+                change.Property == PianoRollViewTickOffsetProperty ||
+                change.Property == PianoRollViewViewportTicksProperty) {
+                InvalidateVisual();
+            }
             if (change.Property == SelectedProperty ||
-                change.Property == TextProperty ||
+                change.Property == TextProperty || 
                 change.Property == FadeInProperty ||
                 change.Property == FadeOutProperty) {
                 InvalidateVisual();
@@ -222,89 +227,101 @@ namespace OpenUtau.App.Controls {
                 FadeIn = wavePart.fadein;
                 FadeOut = wavePart.fadeout;
             }
-            InvalidateWaveform();
-        }
-
-        /// <summary>Redraws, rebuilding the waveform, as after a tempo change.</summary>
-        public void InvalidateWaveform() {
-            waveform.Invalidate();
-            InvalidateVisual();
         }
 
         public override void Render(DrawingContext context) {
+            bool isOpenInPianoRoll = partsCanvas.PianoRollOpenPart == part;
+            const byte fillAlphaFull = 200;
+            const byte fillAlphaDim = 78;
+            const byte grayAlphaFull = 0xC8;
+            const byte grayAlphaDim = 0x52;
+            const double cornerRadius = 5;
+
+            const byte accentAlphaFull = 255;
+            const byte accentAlphaDim = 210;
+
+            Color bodyRgb = Color.FromRgb(0x52, 0x52, 0x52);
+            byte accentAlpha = isOpenInPianoRoll ? accentAlphaFull : accentAlphaDim;
+            byte bodyAlpha = isOpenInPianoRoll ? grayAlphaFull : grayAlphaDim;
+            if (part != null) {
+                var project = DocManager.Inst.Project;
+                if (project != null && part.trackNo >= 0 && part.trackNo < project.tracks.Count) {
+                    var track = project.tracks[part.trackNo];
+                    var note = ThemeManager.GetTrackColor(track.TrackColor).NoteColor.Color;
+                    bodyRgb = Color.FromRgb(note.R, note.G, note.B);
+                    bodyAlpha = isOpenInPianoRoll ? fillAlphaFull : fillAlphaDim;
+                }
+            }
+            var bodyBrush = new SolidColorBrush(Color.FromArgb(bodyAlpha, bodyRgb.R, bodyRgb.G, bodyRgb.B));
+            var accentBrush = new SolidColorBrush(Color.FromArgb(accentAlpha, bodyRgb.R, bodyRgb.G, bodyRgb.B));
+            var borderPen = new Pen(accentBrush, 1);
+
+            const double inset = 1;
+            var outerRect = new Rect(inset, inset, Math.Max(0, Width - 2 * inset), Math.Max(0, Height - 2 * inset));
+            var borderRect = new Rect(inset + 0.5, inset + 0.5,
+                Math.Max(0, Width - 2 * inset - 1), Math.Max(0, Height - 2 * inset - 1));
+            context.DrawRectangle(bodyBrush, null,
+                new RoundedRect(outerRect, new CornerRadius(cornerRadius)));
+
+            double visibleLeft = 0;
+            double visibleRight = outerRect.Width;
+            if (part != null) {
+                visibleLeft = Math.Max(0, (TickOffset - part.position) * TickWidth);
+                visibleRight = Math.Min(outerRect.Width,
+                    (TickOffset + ViewWidth / TickWidth - part.position) * TickWidth);
+            }
+            context.DrawRectangle(null, borderPen, borderRect, cornerRadius, cornerRadius);
+
+            if (isOpenInPianoRoll && pianoRollViewViewportTicks > 0) {
+                double vpLeft = Math.Max(0, pianoRollViewTickOffset * tickWidth);
+                double vpRight = Math.Min(outerRect.Width,
+                    (pianoRollViewTickOffset + pianoRollViewViewportTicks) * tickWidth);
+                if (vpRight > vpLeft + 1) {
+                    var vpRect = new Rect(outerRect.X + vpLeft, outerRect.Y, vpRight - vpLeft, outerRect.Height);
+                    var vpFill = new SolidColorBrush(Color.FromArgb(28, 255, 255, 255));
+                    var vpPen = new Pen(Brushes.White, 2);
+                    context.DrawRectangle(vpFill, vpPen, new RoundedRect(vpRect, new CornerRadius(3)));
+                }
             }
 
-            if (part is UVoicePart voicePart) {
-                // Note Render Status
-                if (Preferences.Default.RenderStatusInTrackBar) {
-                    List<Rect> phraseRects = [];
-
-                    // Draw part phrase blocks over background - accounting for whitespace.
-                    for (int i = 0; i < phraseBlocks.Length; i++) {
-                        var (phrase, rendered) = phraseBlocks[i];
-
-                        int startX = (int) phraseRects.ElementAtOrDefault(i-1).Right;
-                        int endX = (int)((phrase.end - part.position) * tickWidth);
-
-                        // Extend to end of part if notes aren't at end of part.
-                        if (i == phraseBlocks.Length - 1) endX = (int)((part.End - part.position) * tickWidth);
-
-                        Point topLeft = new Point(startX, 1);
-                        Point bottomRight = new Point(endX, Height - 1);
-
-                        var rect = new Rect(topLeft, bottomRight);
-                        phraseRects.Add(rect);
-
-                        // Draw part phrase blocks if phrase is rendered.
-                        if (rendered) {
-                            if (i == 0) {
-                                var roundedRect = new RoundedRect(rect, new CornerRadius(4, 0, 0, 4));
-                                context.DrawRectangle(backgroundBrush, null, roundedRect);
-                            } else if (i == phraseBlocks.Length - 1) {
-                                var roundedRect = new RoundedRect(rect, new CornerRadius(0, 4, 4, 0));
-                                context.DrawRectangle(backgroundBrush, null, roundedRect);
-                            } else {
-                                context.DrawRectangle(backgroundBrush, null, rect);
-                            }
-                        }
-                    }
+            var textLayout = TextLayoutCache.Get(Text, Brushes.White, 12);
+            double labelX = outerRect.X + Math.Max(6, visibleLeft + 6);
+            double labelY = outerRect.Y + (Math.Min(18, outerRect.Height) - textLayout.Height) * 0.5;
+            using (var clip = context.PushClip(new Rect(visibleLeft, 0, Math.Max(0, visibleRight - visibleLeft), outerRect.Height))) {
+                using (var state = context.PushTransform(Matrix.CreateTranslation(labelX, labelY))) {
+                    textLayout.Draw(context, new Point());
                 }
+            }
+
+            if (part == null) {
+                return;
+            }
+            if (part is UVoicePart voicePart && voicePart.notes.Count > 0) {
                 // Notes
-                if (voicePart.notes.Count > 0) {
-                    int maxTone = voicePart.notes.Max(note => note.tone);
-                    int minTone = voicePart.notes.Min(note => note.tone);
-                    if (maxTone - minTone < 52) {
-                        int additional = (52 - (maxTone - minTone)) / 2;
-                        minTone -= additional;
-                        maxTone += additional;
-                    }
-                    using var pushedState = context.PushTransform(Matrix.CreateScale(1, trackHeight / (maxTone - minTone)));
-                    foreach (var note in voicePart.notes) {
-                        var start = new Point((int)(note.position * tickWidth), maxTone - note.tone);
-                        var end = new Point((int)(note.End * tickWidth), maxTone - note.tone);
-                        context.DrawLine(notePen, start, end);
-                    }
+                int maxTone = voicePart.notes.Max(note => note.tone);
+                int minTone = voicePart.notes.Min(note => note.tone);
+                if (maxTone - minTone < 52) {
+                    int additional = (52 - (maxTone - minTone)) / 2;
+                    minTone -= additional;
+                    maxTone += additional;
                 }
-                // Highlight
-                if (PianoRollViewportRect() is Rect vpRect) {
-                    context.DrawRectangle(viewportFill, viewportPen, new RoundedRect(vpRect, new CornerRadius(3)));
-                    if (PianoRollViewportHovered && GripRect(vpRect) is Rect grip) {
-                        // A 3 by 3 grid of dots.
-                        for (int column = 0; column < 3; ++column) {
-                            for (int row = 0; row < 3; ++row) {
-                                var center = new Point(
-                                    grip.X + GripDot / 2 + column * (GripDot + GripGap),
-                                    grip.Y + GripDot / 2 + row * (GripDot + GripGap));
-                                context.DrawEllipse(Brushes.White, null, center, GripDot / 2, GripDot / 2);
-                            }
-                        }
-                    }
+                using var pushedState = context.PushTransform(Matrix.CreateScale(1, trackHeight / (maxTone - minTone)));
+                foreach (var note in voicePart.notes) {
+                    var start = new Point((int)(note.position * tickWidth), maxTone - note.tone);
+                    var end = new Point((int)(note.End * tickWidth), maxTone - note.tone);
+                    context.DrawLine(notePen, start, end);
                 }
             } else if (part is UWavePart wavePart) {
                 // Waveform
                 try {
+                    DrawWaveform(wavePart, GetBitmap(ViewWidth));
+                    if (bitmap != null) {
+                        var srcRect = Bounds.WithY(0);
+                        var dstRect = Bounds.WithX(inset).WithY(inset).WithWidth(Math.Max(0, Bounds.Width - 2 * inset)).WithHeight(Math.Max(0, Bounds.Height - 2 * inset));
+                        context.DrawImage(bitmap, srcRect, dstRect);
+                    }
                 } catch (Exception e) {
-                    Log.Error(e, "failed to draw waveform");
+                    Log.Error(e, "failed to draw bitmap");
                 }
                 // Fade
                 var brush = Brushes.White;
@@ -322,210 +339,101 @@ namespace OpenUtau.App.Controls {
                     context.DrawLine(fadePen, new Point(Width - 1, Height - 2), new Point(FadeOut, 2));
                 }
             }
-
-            // Text
-            var textLayout = TextLayoutCache.Get(Text, Brushes.White, 12);
-            using (var state = context.PushTransform(Matrix.CreateTranslation(3, 2))) {
-                context.DrawRectangle(Brushes.Transparent, null, new Rect(new Point(0, 0), new Size(textLayout.Width, textLayout.Height)));
-                textLayout.Draw(context, new Point());
-            }
         }
 
-        /// <summary>
-        /// The piano roll's visible range inside this part, if the piano roll has
-        /// this part open.
-        /// </summary>
-        private Rect? PianoRollViewportRect() {
-            if (part is not UVoicePart || part != partsCanvas.PianoRollOpenPart || pianoRollViewViewportTicks <= 0) {
-                return null;
+        private WriteableBitmap GetBitmap(double width) {
+            int w = 128 * (int)(width / 128 + 1);
+            if (bitmap == null || bitmap.Size.Width < w) {
+                bitmap?.Dispose();
+                var size = new PixelSize(w, (int)ViewConstants.TrackHeightMax);
+                Log.Information($"created bitmap {size}");
+                bitmap = new WriteableBitmap(
+                    size, new Vector(96, 96),
+                    Avalonia.Platform.PixelFormat.Rgba8888,
+                    Avalonia.Platform.AlphaFormat.Unpremul);
+                bitmapData = new int[size.Width * size.Height];
             }
-            const double inset = 1;
-            double innerWidth = Math.Max(0, Width - 2 * inset);
-            double innerHeight = Math.Max(0, Height - 2 * inset);
-            double vpLeft = Math.Max(0, pianoRollViewTickOffset * tickWidth);
-            double vpRight = Math.Min(innerWidth, (pianoRollViewTickOffset + pianoRollViewViewportTicks) * tickWidth);
-            if (vpRight <= vpLeft + 1) {
-                return null;
-            }
-            return new Rect(inset + vpLeft, inset, vpRight - vpLeft, innerHeight);
+            return bitmap;
         }
 
-        /// <summary>The drag handle in the middle of the viewport indicator, if it fits.</summary>
-        private static Rect? GripRect(Rect viewport) {
-            const double width = 3 * GripDot + 2 * GripGap;
-            const double height = 3 * GripDot + 2 * GripGap;
-            if (viewport.Width < width + 6 || viewport.Height < height + 6) {
-                return null;
-            }
-            return new Rect(
-                Math.Round(viewport.Center.X - width / 2),
-                Math.Round(viewport.Center.Y - height / 2),
-                width, height);
-        }
-
-        /// <summary>
-        /// Whether a point, in this control's coordinates, is on the drag handle of
-        /// the piano roll viewport indicator.
-        /// </summary>
-        public bool HitPianoRollViewportHandle(Point point) {
-            return PianoRollViewportRect() is Rect vpRect
-                && GripRect(vpRect) is Rect grip
-                && grip.Inflate(new Thickness(6, 8)).Contains(point);
-        }
-
-        private void PointerChanged(Point point) {
-            if (PianoRollViewportRect() is Rect vpRect) {
-                PianoRollViewportHovered = vpRect.Contains(point);
-            }
-        }
-
-        // The file's channels as lanes, on a grid from the part's start: scrolling
-        // moves the whole control, so it never re-bins the samples.
-        private void DrawWaveform(DrawingContext context, UWavePart wavePart) {
-            if (wavePart.Peaks is not { IsCompletedSuccessfully: true, Result: WavePeaks peaks }) {
+        private void DrawWaveform(UWavePart wavePart, WriteableBitmap bitmap) {
+            if (wavePart.Peaks == null ||
+                !wavePart.Peaks.IsCompletedSuccessfully ||
+                wavePart.Peaks.Result == null) {
                 return;
             }
-            var project = Core.DocManager.Inst.Project;
-            double scale = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1;
-            // Everything below is in device pixels. left is where the part starts,
-            // from the left edge of the canvas.
-            double pixelsPerTick = TickWidth * scale;
-            double left = Bounds.X * scale;
-            int columns = (int)Math.Ceiling(wavePart.Duration * pixelsPerTick);
-            int visibleStart = Math.Clamp((int)Math.Floor(-left), 0, columns);
-            int visibleEnd = Math.Clamp((int)Math.Ceiling(ViewWidth * scale - left) + 1, visibleStart, columns);
-            if (visibleEnd <= visibleStart) {
-                return;
+            var wholePeaks = wavePart.Peaks.Result;
+            int skipCount = (int)(wavePart.peaksSampleRate * wavePart.GetSkipMs(Core.DocManager.Inst.Project) / 1000);
+            if (skipCount >= wholePeaks[0].Length) return;
+
+            double height = TrackHeight;
+            double monoChnlAmp = (height - 4.0) / 2;
+            double stereoChnlAmp = (height - 6.0) / 4;
+
+            var timeAxis = Core.DocManager.Inst.Project.timeAxis;
+            DiscreteSignal[] peaks = new DiscreteSignal[wholePeaks.Length];
+            for (int i = 0; i < wholePeaks.Length; i++) {
+                var newSamples = wholePeaks[i].Samples.Skip(skipCount);
+                peaks[i] = new DiscreteSignal(wavePart.peaksSampleRate, newSamples);
             }
-            double fileStartMs = project.timeAxis.TickPosToMsPos(wavePart.position) - wavePart.GetSkipMs(project);
-            waveform.Update(project.timeAxis, (peaks, fileStartMs), wavePart.position, pixelsPerTick,
-                Lanes(peaks.Channels, Math.Round(Bounds.Height * scale), scale), visibleStart, visibleEnd, 0, columns,
-                (edges, min, max) => FillColumns(peaks, fileStartMs, edges, min, max));
-            // Snap the columns to whole device pixels of the canvas.
-            waveform.Draw(context, Bounds.Size, scale, Math.Round(left) - left, waveformFill);
-        }
-
-        // One band per channel, 2 pixels from the edges and from each other.
-        private static (double y, double height)[] Lanes(int channels, double height, double scale) {
-            double gap = Math.Round(2 * scale);
-            double laneHeight = Math.Floor((height - gap * (channels + 1)) / channels);
-            var lanes = new (double y, double height)[channels];
-            for (int i = 0; i < channels; ++i) {
-                lanes[i] = (gap + i * (laneHeight + gap), laneHeight);
+            int x = 0;
+            if (TickOffset <= wavePart.position) {
+                // Part starts in or to the right of view.
+                x = (int)(TickWidth * (wavePart.position - TickOffset));
             }
-            return lanes;
-        }
-
-        private static bool FillColumns(WavePeaks peaks, double fileStartMs, double[] edges, float[][] min, float[][] max) {
-            int Frame(double ms) => (int)Math.Floor((ms - fileStartMs) * peaks.SampleRate / 1000);
-            for (int i = 0; i + 1 < edges.Length; ++i) {
-                int f0 = Frame(edges[i]);
-                int f1 = Math.Min(Frame(edges[i + 1]), peaks.Frames);
-                for (int lane = 0; lane < min.Length; ++lane) {
-                    if (f0 < 0 || f0 >= peaks.Frames) {
-                        min[lane][i] = max[lane][i] = float.NaN;
-                    } else if (f1 > f0) {
-                        peaks.MinMax(lane, f0, f1, out min[lane][i], out max[lane][i]);
-                    } else {
-                        // Zoomed in past one sample per column: hold the last sample.
-                        int f = Math.Max(0, f0 - 1);
-                        peaks.MinMax(lane, f, f + 1, out min[lane][i], out max[lane][i]);
-                    }
-                }
-            }
-            return true;
-        }
-
-        /// <summary>
-        /// Updates render status of phrases within range, then updates visual if any change.
-        /// Supports updating multiple phrases if any part of phrase within startTick/endTick.
-        /// startTick/endTick use the absolute position of the phrase.
-        /// </summary>
-        public void UpdateRenderStatus(int startTick, int endTick, bool rendered) {
-            if (startTick > endTick) {
-                Log.Error("StartTick cannot be greater than EndTick in UpdateRenderStatus, update ignored.");
-                return;
-            }
-
-            bool triggerRender = false;
-            for (var index = 0; index < phraseBlocks.Length; index++) {
-                var phraseBlock = phraseBlocks[index];
-
-                // Filters phrases outside range.
-                if (phraseBlock.phrase.end <= startTick || endTick <= phraseBlock.phrase.position) continue;
-                if (phraseBlock.rendered == rendered) continue;
-
-                phraseBlocks[index] = phraseBlock with { rendered = rendered };
-                triggerRender = true;
-            }
-
-            if (triggerRender) InvalidateVisual();
-        }
-
-        /// <summary>
-        /// Updates render status of phrase if exists, then updates visual if it changes
-        /// </summary>
-        public void UpdateRenderStatus(RenderPhrase phrase, bool rendered) {
-            for (var i = 0; i < phraseBlocks.Length; i++) {
-                var phraseBlock = phraseBlocks[i];
-
-                if (phraseBlock.phrase.Equals(phrase)) {
-                    if (phraseBlock.rendered == rendered) return;
-
-                    phraseBlocks[i] = phraseBlock with { rendered = rendered };
-                    InvalidateVisual();
-                    return;
-                }
-            }
-        }
-
-        /// <summary>
-        /// Updates the phrase blocks based on voicePart, retains render status if phrases match.
-        /// Computationally expensive.
-        /// </summary>
-        /// <param name="voicePart">VoicePart to check render blocks by</param>
-        /// <returns>Visual update required</returns>
-        public bool RebuildPhraseBlocks(UVoicePart voicePart) {
-            bool requiresVisualUpdate = voicePart.renderPhrases.Count != phraseBlocks.Length;
-
-            List<(RenderPhrase phrase, bool rendered)> newPhraseBlocks = [];
-            List<RenderPhrase> renderedPhrases = (
-                from phraseBlock
-                in phraseBlocks
-                where phraseBlock.rendered
-                select phraseBlock.phrase)
-                .ToList();
-
-            foreach (var partPhrase in voicePart.renderPhrases) {
-                bool added = false;
-                // Search for rendered phrase that exists in voicePart
-                foreach (var renderedPhrase in renderedPhrases) {
-                    if (partPhrase.hash == renderedPhrase.hash) {
-                        newPhraseBlocks.Add((partPhrase, true));
-                        added = true;
+            int posTick = (int)(TickOffset + x / TickWidth);
+            double posMs = timeAxis.TickPosToMsPos(posTick);
+            double offsetMs = timeAxis.TickPosToMsPos(wavePart.position);
+            int sampleIndex = (int)(wavePart.peaksSampleRate * (posMs - offsetMs) * 0.001);
+            sampleIndex = Math.Clamp(sampleIndex, 0, peaks[0].Length);
+            using (var frameBuffer = bitmap.Lock()) {
+                Array.Clear(bitmapData, 0, bitmapData.Length);
+                while (x < frameBuffer.Size.Width) {
+                    if (posTick >= wavePart.position + wavePart.Duration) {
                         break;
                     }
+                    int nextPosTick = (int)(TickOffset + (x + 1) / TickWidth);
+                    double nexPosMs = timeAxis.TickPosToMsPos(nextPosTick);
+                    int nextSampleIndex = (int)(wavePart.peaksSampleRate * (nexPosMs - offsetMs) * 0.001);
+                    nextSampleIndex = Math.Clamp(nextSampleIndex, 0, peaks[0].Length);
+                    if (nextSampleIndex > sampleIndex) {
+                        for (int i = 0; i < peaks.Length; ++i) {
+                            var segment = new ArraySegment<float>(peaks[i].Samples, sampleIndex, nextSampleIndex - sampleIndex);
+                            float min = segment.Min();
+                            float max = segment.Max();
+                            double ySpan = peaks.Length == 1 ? monoChnlAmp : stereoChnlAmp;
+                            double yOffset = i == 1 ? monoChnlAmp : 0;
+                            DrawPeak(bitmapData, frameBuffer.Size.Width, x,
+                                (int)(ySpan * (1 + -min) + yOffset) + 2,
+                                (int)(ySpan * (1 + -max) + yOffset) + 2);
+                        }
+                    }
+                    x++;
+                    posTick = nextPosTick;
+                    posMs = nexPosMs;
+                    sampleIndex = nextSampleIndex;
                 }
-
-                if (!added) {
-                    newPhraseBlocks.Add((partPhrase, false));
-                }
+                Marshal.Copy(bitmapData, 0, frameBuffer.Address, bitmapData.Length);
             }
-
-            phraseBlocks = newPhraseBlocks.ToArray();
-            return requiresVisualUpdate;
         }
 
-        /// <summary>
-        /// Sets all phrase blocks, and updates visual.
-        /// </summary>
-        public void SetAllBlocks(bool state) {
-            UpdateRenderStatus(part.position, part.End, state);
+        private void DrawPeak(int[] data, int width, int x, int y1, int y2) {
+            const int white = unchecked((int)0xFFFFFFFF);
+            if (y1 > y2) {
+                int temp = y2;
+                y2 = y1;
+                y1 = temp;
+            }
+            for (var y = y1; y <= y2; ++y) {
+                data[x + width * y] = white;
+            }
         }
 
-        public void Report(int value) { }
+        public void Report(int value) {
+        }
 
         public void Dispose() {
+            bitmap?.Dispose();
             unbinds.ForEach(u => u.Dispose());
             unbinds.Clear();
         }

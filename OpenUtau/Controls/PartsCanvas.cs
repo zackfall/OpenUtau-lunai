@@ -3,13 +3,12 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.Linq;
+using System.Reactive.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using OpenUtau.App.ViewModels;
-using OpenUtau.Core.Render;
 using OpenUtau.Core.Ustx;
 using ReactiveUI;
-using ReactiveUI.Primitives;
 
 namespace OpenUtau.App.Controls {
     class PartsCanvas : Canvas {
@@ -143,7 +142,7 @@ namespace OpenUtau.App.Controls {
             MessageBus.Current.Listen<TimeAxisChangedEvent>()
                 .Subscribe(e => {
                     foreach (var (part, control) in partControls) {
-                        control.InvalidateWaveform();
+                        control.InvalidateVisual();
                     }
                 });
             MessageBus.Current.Listen<ThemeChangedEvent>()

@@ -26,6 +26,7 @@ namespace OpenUtau.Core.Ustx {
         public double autoPreutter { get; private set; }
         public double autoOverlap { get; private set; }
         public double maxOtoPreutter { get; private set; }
+        public double maxFilePreutter { get; private set; }
         public bool adjacent { get; private set; }
         public bool overlapped { get; private set; }
         public double tailIntrude { get; private set; }

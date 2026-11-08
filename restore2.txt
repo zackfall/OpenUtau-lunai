@@ -1,0 +1,6 @@
+  Determining projects to restore...
+  Restored C:\Users\Rion\dev\personal\OpenUtau-lunai\OpenUtau.Core\OpenUtau.Core.csproj (in 1.15 sec).
+  Restored C:\Users\Rion\dev\personal\OpenUtau-lunai\OpenUtau.Plugin.Builtin\OpenUtau.Plugin.Builtin.csproj (in 1.15 sec).
+  Restored C:\Users\Rion\dev\personal\OpenUtau-lunai\OpenUtau.Test\OpenUtau.Test.csproj (in 1.15 sec).
+  Restored C:\Users\Rion\dev\personal\OpenUtau-lunai\OpenUtau.UiTest\OpenUtau.UiTest.csproj (in 1.15 sec).
+  Restored C:\Users\Rion\dev\personal\OpenUtau-lunai\OpenUtau\OpenUtau.csproj (in 1.16 sec).

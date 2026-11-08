@@ -18,6 +18,17 @@ namespace OpenUtau.Core.Enunu {
         }
 
         /// <summary>
+        /// Sends a request to the given port and returns the deserialized response.
+        /// </summary>
+        internal T SendRequest<T>(string[] args, string port) {
+            string? message = Send(args, port, 300);
+            if (string.IsNullOrEmpty(message)) {
+                return (T)Activator.CreateInstance(typeof(T))!;
+            }
+            return Json.Deserialize<T>(message)!;
+        }
+
+        /// <summary>
         /// Sends a request and returns the raw response, or null when the server does not respond in time.
         /// </summary>
         internal string? Send(object[] args, string port, int second) {

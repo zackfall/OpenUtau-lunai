@@ -1,7 +1,8 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using OpenUtau.Core.Ustx;
+using Serilog;
 
 namespace OpenUtau.Core.Enunu {
     public struct EnunuNote {
@@ -46,6 +47,16 @@ namespace OpenUtau.Core.Enunu {
                 }
                 writer.WriteLine("[#TRACKEND]");
             }
+        }
+
+        internal static string SetPortNum() {
+            var ver_response = EnunuClient.Inst.SendRequest<VersionResponse>(new string[] { "ver_check" }, "15556");
+            if (ver_response.error != null) {
+                Log.Error(ver_response.error);
+            } else if (ver_response.result.name != null) {
+                return "15556";
+            }
+            return "15555";
         }
     }
 }

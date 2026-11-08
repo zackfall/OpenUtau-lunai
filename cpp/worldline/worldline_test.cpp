@@ -1,10 +1,6 @@
 #include "worldline.h"
 
-<<<<<<< HEAD
-||||||| 29e0e16d
-=======
 #include <cmath>
->>>>>>> upstream/master
 #include <vector>
 
 #include "gmock/gmock.h"
@@ -44,12 +40,6 @@ TEST(WorldlineTest, TestF0) {
     EXPECT_THAT(written, testing::AllOf(testing::Gt(0), testing::Le(count)));
     EXPECT_THAT(f0.back(), testing::Not(testing::DoubleEq(-1)));
   }
-<<<<<<< HEAD
-||||||| 29e0e16d
-  PhraseSynth* phrase_synth = PhraseSynthNew();
-  EXPECT_THAT(phrase_synth, testing::NotNull());
-  PhraseSynthDelete(phrase_synth);
-=======
 }
 
 // Unvoiced, flat sp and fully aperiodic: the output is the noise half alone,
@@ -80,5 +70,4 @@ TEST(WorldlineTest, ContinuousNoiseSynthesisLevel) {
   EXPECT_THAT(sp, testing::Each(s));
   EXPECT_THAT(harmonic_sp, testing::Each(s));
   EXPECT_THAT(ap, testing::Each(1.0));
->>>>>>> upstream/master
 }

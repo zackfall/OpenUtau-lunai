@@ -40,6 +40,8 @@ namespace OpenUtau.Core.Format {
         public const string RPIT = "rpit";
         public const string PITO = "pito";
 
+        public const string GRWC = "grwc";
+
         public static readonly string[] required = { DYN, PITD, CLR, ENG, VEL, VOL, ATK, DEC };
 
         public static void AddDefaultExpressions(UProject project) {

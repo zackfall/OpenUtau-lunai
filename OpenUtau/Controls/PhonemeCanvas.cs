@@ -1,15 +1,12 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
 using Avalonia.Media.TextFormatting;
-using Avalonia.Styling;
-using OpenUtau.App;
 using OpenUtau.App.ViewModels;
 using OpenUtau.Core;
 using OpenUtau.Core.Ustx;
-using OpenUtau.Core.Util;
 using ReactiveUI;
 using ReactiveUI.Primitives;
 
@@ -64,7 +61,7 @@ namespace OpenUtau.App.Controls {
             private set => SetAndRaise(ShowPhonemeProperty, ref showPhoneme, value);
         }
 
-        private IBrush background = Brushes.Transparent;
+        private IBrush background = Brushes.White;
         private double tickWidth;
         private double tickOffset;
         private UVoicePart? part;
@@ -73,55 +70,29 @@ namespace OpenUtau.App.Controls {
         private HashSet<UNote> selectedNotes = new HashSet<UNote>();
         private Geometry pointGeometry;
         private UPhoneme? mouseoverPhoneme;
-        private IBrush? embeddedBackgroundBrush;
 
         public PhonemeCanvas() {
             ClipToBounds = true;
             pointGeometry = new EllipseGeometry(new Rect(-2.5, -2.5, 5, 5));
-            MessageBus.Current.Listen<NotesRefreshEvent>()
-                .Subscribe(_ => InvalidateVisual());
-            MessageBus.Current.Listen<NotesSelectionEvent>()
-                .Subscribe(e => {
+            System.ObservableExtensions.Subscribe(
+                MessageBus.Current.Listen<NotesRefreshEvent>(),
+                _ => InvalidateVisual());
+            System.ObservableExtensions.Subscribe(
+                MessageBus.Current.Listen<NotesSelectionEvent>(),
+                e => {
                     selectedNotes.Clear();
                     selectedNotes.UnionWith(e.selectedNotes);
                     selectedNotes.UnionWith(e.tempSelectedNotes);
                     InvalidateVisual();
                 });
-            MessageBus.Current.Listen<PhonemeMouseoverEvent>()
-                .Subscribe(e => {
+            System.ObservableExtensions.Subscribe(
+                MessageBus.Current.Listen<PhonemeMouseoverEvent>(),
+                e => {
                     if (mouseoverPhoneme != e.mouseoverPhoneme) {
                         mouseoverPhoneme = e.mouseoverPhoneme;
                         InvalidateVisual();
                     }
                 });
-            MessageBus.Current.Listen<ThemeChangedEvent>()
-                .Subscribe(_ => {
-                    embeddedBackgroundBrush = null;
-                    InvalidateVisual();
-                });
-        }
-
-        IBrush GetEmbeddedBackgroundBrush() {
-            if (embeddedBackgroundBrush != null) {
-                return embeddedBackgroundBrush;
-            }
-            var canvasColor = Avalonia.Media.Colors.Transparent;
-            if (Application.Current?.TryGetResource("WorkspaceCanvasColor", ActualThemeVariant, out var resource) == true
-                && resource is Color color) {
-                canvasColor = color;
-            }
-            var transparent = Color.FromArgb(0, canvasColor.R, canvasColor.G, canvasColor.B);
-            byte bottomAlpha = (byte)Math.Round(255 * ViewConstants.PhonemeEmbeddedBackgroundBottomOpacity);
-            var bottom = Color.FromArgb(bottomAlpha, canvasColor.R, canvasColor.G, canvasColor.B);
-            embeddedBackgroundBrush = new LinearGradientBrush {
-                StartPoint = new RelativePoint(0.5, 0, RelativeUnit.Relative),
-                EndPoint = new RelativePoint(0.5, 1, RelativeUnit.Relative),
-                GradientStops = {
-                    new GradientStop(transparent, 0),
-                    new GradientStop(bottom, 1),
-                },
-            };
-            return embeddedBackgroundBrush;
         }
 
         protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change) {
@@ -139,20 +110,17 @@ namespace OpenUtau.App.Controls {
             if (viewModel == null) {
                 return;
             }
+            context.DrawRectangle(Background, null, Bounds.WithX(0).WithY(0));
+            // Renderers that do not use envelopes ignore the envelope handles (Preutter/Attack/Release/Overlap),
+            // so they draw each phoneme as a simple rectangle (bar) rather than drawing the shape of the envelope.
+            bool supportsEnvelope = PhonemeUIRender.SupportsPhonemeEnvelope(Part);
             double leftTick = TickOffset - 480;
             double rightTick = TickOffset + Bounds.Width / TickWidth + 480;
             bool raiseText = false;
             double lastTextEndX = double.NegativeInfinity;
 
-            // In DiffSinger mode: tag strip at top (hidden when DiffSingerLangCodeHide), bars below; in UTAU mode: use original layout
-            double tagStripHeight = 0, barY, barHeight;
-            if (diffSingerMode) {
-                tagStripHeight = hideLangPrefix ? 0 : ViewConstants.PhonemeTagStripHeight;
-                barY = tagStripHeight;
-                barHeight = Math.Max(0, Bounds.Height - tagStripHeight);
-            } else {
-                (barY, barHeight) = ViewConstants.GetClassicPhonemeEnvelopeLayout();
-            }
+            const double y = 35.5;
+            const double height = 24;
             foreach (var phoneme in Part.phonemes) {
                 double leftBound = viewModel.Project.timeAxis.MsPosToTickPos(phoneme.PositionMs - phoneme.preutter) - Part.position;
                 double rightBound = phoneme.End;
@@ -163,34 +131,72 @@ namespace OpenUtau.App.Controls {
                 double x = Math.Round(viewModel.TickToneToPoint(phoneme.position, 0).X) + 0.5;
                 double posMs = phoneme.PositionMs;
                 if (!phoneme.Error) {
+                    if (!supportsEnvelope) {
+                        double xRight = Math.Round(viewModel.TickToneToPoint(phoneme.End, 0).X) + 0.5;
+                        var brushBar = selectedNotes.Contains(phoneme.Parent) ? ThemeManager.AccentBrush2Semi : ThemeManager.AccentBrush1Semi;
+                        context.DrawRectangle(brushBar, null, new Rect(x, y, xRight - x, height));
+                    } else {
+                        double x0 = viewModel.TickToneToPoint(timeAxis.MsPosToTickPos(posMs + phoneme.envelope.data[0].X) - Part.position, 0).X;
+                        double y0 = (1 - phoneme.envelope.data[0].Y / 100) * height;
+                        double x1 = viewModel.TickToneToPoint(timeAxis.MsPosToTickPos(posMs + phoneme.envelope.data[1].X) - Part.position, 0).X;
+                        double y1 = (1 - phoneme.envelope.data[1].Y / 100) * height;
+                        double x2 = viewModel.TickToneToPoint(timeAxis.MsPosToTickPos(posMs + phoneme.envelope.data[2].X) - Part.position, 0).X;
+                        double y2 = (1 - phoneme.envelope.data[2].Y / 100) * height;
+                        double x3 = viewModel.TickToneToPoint(timeAxis.MsPosToTickPos(posMs + phoneme.envelope.data[3].X) - Part.position, 0).X;
+                        double y3 = (1 - phoneme.envelope.data[3].Y / 100) * height;
+                        double x4 = viewModel.TickToneToPoint(timeAxis.MsPosToTickPos(posMs + phoneme.envelope.data[4].X) - Part.position, 0).X;
+                        double y4 = (1 - phoneme.envelope.data[4].Y / 100) * height;
 
+                        var pen = selectedNotes.Contains(phoneme.Parent) ? ThemeManager.AccentPen2 : ThemeManager.AccentPen1;
+                        var brush = selectedNotes.Contains(phoneme.Parent) ? ThemeManager.AccentBrush2Semi : ThemeManager.AccentBrush1Semi;
+
+                        var point0 = new Point(x0, y + y0);
+                        var point1 = new Point(x1, y + y1);
+                        var point2 = new Point(x2, y + y2);
+                        var point3 = new Point(x3, y + y3);
+                        var point4 = new Point(x4, y + y4);
                         var polyline = new PolylineGeometry(new Point[] { point0, point1, point2, point3, point4 }, true);
                         context.DrawGeometry(brush, pen, polyline);
 
+                        brush = phoneme.preutterDelta.HasValue ? pen!.Brush : ThemeManager.BackgroundBrush;
+                        using (var state = context.PushTransform(Matrix.CreateTranslation(x0, y + y0 - 1))) {
                             context.DrawGeometry(brush, pen, pointGeometry);
                         }
+                        brush = phoneme.attackTimeDelta.HasValue ? pen!.Brush : ThemeManager.BackgroundBrush;
+                        using (var state = context.PushTransform(Matrix.CreateTranslation(point1))) {
+                            context.DrawGeometry(brush, pen, pointGeometry);
+                        }
+                        brush = phoneme.releaseTimeDelta.HasValue ? pen!.Brush : ThemeManager.BackgroundBrush;
+                        using (var state = context.PushTransform(Matrix.CreateTranslation(point3))) {
+                            context.DrawGeometry(brush, pen, pointGeometry);
+                        }
+                        if (phoneme.Next != null && phoneme.Next.adjacent) {
+                            brush = phoneme.Next.overlapDelta.HasValue ? pen!.Brush : ThemeManager.BackgroundBrush;
+                            using (var state = context.PushTransform(Matrix.CreateTranslation(x4, y + y4 - 1))) {
                                 context.DrawGeometry(brush, pen, pointGeometry);
                             }
                         }
                     }
                 }
 
-                var penPos = ThemeManager.NoteBorderPen;
+                var penPos = ThemeManager.AccentPen2;
                 if (phoneme.rawPosition != phoneme.position) {
-                    penPos = ThemeManager.NoteBorderPenThickness3;
+                    penPos = ThemeManager.AccentPen2Thickness3;
                 }
-                if (diffSingerMode) {
-                    // Left border already drawn in diffSingerMode block; use penPos for timing indicator (thicker when moved)
-                    var xLeft = viewModel.TickToneToPoint(phoneme.position, 0).X;
-                    context.DrawLine(penPos, new Point(xLeft, barY), new Point(xLeft, barY + barHeight));
-                } else {
-                    context.DrawLine(penPos, new Point(x, barY), new Point(x, barY + barHeight));
-                }
+                context.DrawLine(penPos, new Point(x, y), new Point(x, y + height));
 
                 // FIXME: Changing code below may break `HitTestAlias`.
                 if (viewModel.TickWidth > ViewConstants.PianoRollTickWidthShowDetails) {
                     string phonemeText = !string.IsNullOrEmpty(phoneme.phonemeMapped) ? phoneme.phonemeMapped : phoneme.phoneme;
                     if (!string.IsNullOrEmpty(phonemeText)) {
+                        (double textX, double textY, Size size, TextLayout textLayout)
+                        = PhonemeUIRender.AliasPosition(viewModel, phoneme, langCode, ref lastTextEndX, ref raiseText);
+                        using (var state = context.PushTransform(Matrix.CreateTranslation(textX + 2, textY))) {
+                            var pen = mouseoverPhoneme == phoneme ? ThemeManager.AccentPen1Thickness2
+                                : phoneme.Error ? ErrorPen
+                                : ThemeManager.NeutralAccentPenSemi;
+                            context.DrawRectangle(ThemeManager.BackgroundBrush, pen, new Rect(new Point(-2, 1.5), size), 4, 4);
+                            textLayout.Draw(context, new Point());
                         }
                     }
                 }

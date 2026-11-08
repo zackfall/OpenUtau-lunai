@@ -51,8 +51,9 @@ namespace OpenUtau.App.Views {
 
         void OpenSingersFolder(object sender, RoutedEventArgs e) {
             try {
-                Directory.CreateDirectory(viewModel!.SingerPath);
-                OS.OpenFolder(viewModel!.SingerPath);
+                var path = PathManager.Inst.SingersPath;
+                Directory.CreateDirectory(path);
+                OS.OpenFolder(path);
             } catch (Exception ex) {
                 DocManager.Inst.ExecuteCmd(new ErrorMessageNotification(ex));
             }
@@ -60,9 +61,16 @@ namespace OpenUtau.App.Views {
 
         void OpenAddlSingersFolder(object sender, RoutedEventArgs e) {
             try {
-                if (Directory.Exists(viewModel!.AdditionalSingersPath)) {
-                    OS.OpenFolder(viewModel!.AdditionalSingersPath);
+                var path = PathManager.Inst.AdditionalSingersPath;
+                if (string.IsNullOrWhiteSpace(path)) {
+                    DocManager.Inst.ExecuteCmd(new ErrorMessageNotification("Additional singer path is not set."));
+                    return;
                 }
+                if (!Directory.Exists(path)) {
+                    DocManager.Inst.ExecuteCmd(new ErrorMessageNotification($"Additional singer path does not exist:\n{path}"));
+                    return;
+                }
+                OS.OpenFolder(path);
             } catch (Exception ex) {
                 DocManager.Inst.ExecuteCmd(new ErrorMessageNotification(ex));
             }
@@ -73,12 +81,16 @@ namespace OpenUtau.App.Views {
         }
 
         async void SelectAddlSingersPath(object sender, RoutedEventArgs e) {
-            var path = await FilePicker.OpenFolderAboutSinger(this, "prefs.paths.addlsinger");
-            if (string.IsNullOrEmpty(path)) {
-                return;
-            }
-            if (Directory.Exists(path)) {
-                viewModel!.SetAddlSingersPath(path);
+            try {
+                var path = await FilePicker.OpenFolderAboutSinger(this, "prefs.paths.addlsinger");
+                if (string.IsNullOrEmpty(path)) {
+                    return;
+                }
+                if (Directory.Exists(path)) {
+                    viewModel!.SetAddlSingersPath(path);
+                }
+            } catch (Exception ex) {
+                DocManager.Inst.ExecuteCmd(new ErrorMessageNotification(ex));
             }
         }
 

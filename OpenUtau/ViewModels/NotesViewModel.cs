@@ -351,8 +351,8 @@ namespace OpenUtau.App.ViewModels {
                         return;
                     }
                     if (checkedFast) {
-                        SetLivePitchMode(LivePitchMode.SuperFast);
-                    } else if (Preferences.Default.RealTimePitchMode == (int)LivePitchMode.SuperFast) {
+                        SetLivePitchMode(LivePitchMode.Fast);
+                    } else if (Preferences.Default.RealTimePitchMode == (int)LivePitchMode.Fast) {
                         SetLivePitchMode(LivePitchMode.Off);
                     }
                 });
@@ -1845,14 +1845,14 @@ namespace OpenUtau.App.ViewModels {
             livePitchSyncing = true;
             var mode = (LivePitchMode)Preferences.Default.RealTimePitchMode;
             LivePitchNormal = mode == LivePitchMode.Normal;
-            LivePitchSuperFast = mode == LivePitchMode.SuperFast;
+            LivePitchSuperFast = mode == LivePitchMode.Fast;
             livePitchSyncing = false;
         }
 
         void SetLivePitchMode(LivePitchMode mode) {
             livePitchSyncing = true;
             LivePitchNormal = mode == LivePitchMode.Normal;
-            LivePitchSuperFast = mode == LivePitchMode.SuperFast;
+            LivePitchSuperFast = mode == LivePitchMode.Fast;
             Preferences.Default.RealTimePitchMode = (int)mode;
             Preferences.Save();
             livePitchSyncing = false;

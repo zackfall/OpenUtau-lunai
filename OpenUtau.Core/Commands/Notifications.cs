@@ -374,4 +374,8 @@ namespace OpenUtau.Core {
         }
         public override string ToString() => "Note preset changed.";
     }
+
+    public class PackagesChangedNotification : UNotification {
+        public override string ToString() => "Packages changed.";
+    }
 }

@@ -92,18 +92,21 @@ namespace OpenUtau.App.Controls {
 
         public TickBackground() {
             RebuildPens();
-            MessageBus.Current.Listen<ThemeChangedEvent>()
-                .Subscribe(_ => {
+            System.ObservableExtensions.Subscribe(
+                MessageBus.Current.Listen<ThemeChangedEvent>(),
+                _ => {
                     RebuildPens();
                     InvalidateVisual();
                 });
-            MessageBus.Current.Listen<TickGridLinesStyleChangedEvent>()
-                .Subscribe(_ => {
+            System.ObservableExtensions.Subscribe(
+                MessageBus.Current.Listen<TickGridLinesStyleChangedEvent>(),
+                _ => {
                     RebuildPens();
                     InvalidateVisual();
                 });
-            MessageBus.Current.Listen<TimeAxisChangedEvent>()
-                .Subscribe(e => InvalidateVisual());
+            System.ObservableExtensions.Subscribe(
+                MessageBus.Current.Listen<TimeAxisChangedEvent>(),
+                e => InvalidateVisual());
         }
 
         void RebuildPens() {

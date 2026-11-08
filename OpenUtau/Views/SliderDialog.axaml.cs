@@ -20,10 +20,11 @@ namespace OpenUtau.App.Views {
             Slider.Maximum = max;
             Slider.TickFrequency = tick;
 
-            this.WhenAnyValue(d => d.Slider.Value)
-                    .Subscribe(value => {
-                        TextBlock.Text = value.ToString();
-                     });
+            System.ObservableExtensions.Subscribe(
+                this.WhenAnyValue(d => d.Slider.Value),
+                value => {
+                    TextBlock.Text = value.ToString();
+                });
         }
 
         private void OkButtonClick(object? sender, RoutedEventArgs e) {

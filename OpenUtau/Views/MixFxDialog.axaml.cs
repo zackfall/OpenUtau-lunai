@@ -35,7 +35,9 @@ namespace OpenUtau.App.Views {
             DataContext = viewModel = new MixFxViewModel(track);
             viewModel.AskForName = PromptForNameAsync;
             // Keep the track header's FX indicator in step with the power switch.
-            viewModel.WhenAnyValue(x => x.Enabled).Subscribe(_ => NotifyTrackHeader());
+            System.ObservableExtensions.Subscribe(
+                viewModel.WhenAnyValue(x => x.Enabled),
+                _ => NotifyTrackHeader());
             if (track != null) {
                 DocManager.Inst.AddSubscriber(this);
             }

@@ -37,8 +37,9 @@ foreach (var box in this.GetLogicalDescendants().OfType<TextBox>()) {
                   slider.AddHandler(PointerMovedEvent, SliderPointerMoved, RoutingStrategies.Tunnel);
               }
           
-            MessageBus.Current.Listen<PianorollRefreshEvent>()
-                .Subscribe(e => {
+            System.ObservableExtensions.Subscribe(
+                MessageBus.Current.Listen<PianorollRefreshEvent>(),
+                e => {
                     if(e.refreshItem == "Part") {
                         LoadPart(ViewModel.Part);
                     }
@@ -51,15 +52,19 @@ foreach (var box in this.GetLogicalDescendants().OfType<TextBox>()) {
             DetachedFromVisualTree += (_, _) => {
                 scrollStyleApplyGeneration++;
             };
-            this.GetObservable(IsVisibleProperty).Subscribe(visible => {
-                if (visible) {
-                    RefreshWorkspaceChrome();
-                }
-            });
-            MessageBus.Current.Listen<ScrollbarsStyleChangedEvent>()
-                .Subscribe(_ => ScheduleApplyNotePropsScrollStyle());
-            MessageBus.Current.Listen<ThemeChangedEvent>()
-                .Subscribe(_ => {
+            System.ObservableExtensions.Subscribe(
+                this.GetObservable(IsVisibleProperty),
+                visible => {
+                    if (visible) {
+                        RefreshWorkspaceChrome();
+                    }
+                });
+            System.ObservableExtensions.Subscribe(
+                MessageBus.Current.Listen<ScrollbarsStyleChangedEvent>(),
+                _ => ScheduleApplyNotePropsScrollStyle());
+            System.ObservableExtensions.Subscribe(
+                MessageBus.Current.Listen<ThemeChangedEvent>(),
+                _ => {
                     if (IsVisible) {
                         RefreshWorkspaceChrome();
                     }

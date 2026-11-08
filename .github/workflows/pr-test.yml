@@ -1,4 +1,4 @@
-on:
+﻿on:
   pull_request:
     branches: [ master ]
   workflow_dispatch:
@@ -25,14 +25,6 @@ jobs:
     - uses: actions/setup-dotnet@v4
       with:
         dotnet-version: |
-<<<<<<< HEAD
-||||||| 29e0e16d
-          6.0.x
-          8.0.x
-=======
-          6.0.x
-          8.0.x
->>>>>>> upstream/master
           10.0.x
 
     - name: restore

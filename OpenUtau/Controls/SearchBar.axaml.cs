@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -61,6 +61,14 @@ namespace OpenUtau.App.Controls {
                 noteMode = viewModel.NoteMode;
             }
             Unsubscribe();
+        }
+
+        // Each Show() creates a new view model that subscribes to DocManager;
+        // a hidden one must stop reacting to part loads.
+        void Unsubscribe() {
+            if (viewModel != null) {
+                DocManager.Inst.RemoveSubscriber(viewModel);
+            }
         }
 
         private void Box_GotFocus(object? sender, FocusChangedEventArgs e) {

@@ -5,6 +5,7 @@ using Avalonia.Controls;
 using Avalonia.Data;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using OpenUtau.App.Controls;
 using ReactiveUI;
 using ReactiveUI.Primitives;
 
@@ -23,11 +24,9 @@ namespace OpenUtau.Controls{
         {
             Classes.Add("workspacePanelTextBox");
             Text = "0";
-            this.WhenAnyValue(x => x.Text)
-                .OfType<String>()
-                .Subscribe((text => { 
-                    OnTextChanged(text);
-                }));
+            System.ObservableExtensions.Subscribe(
+                this.WhenAnyValue(x => x.Text).OfType<String>(),
+                (Action<string>)(text => OnTextChanged(text)));
         }
 
         public int Value

@@ -306,7 +306,11 @@ namespace OpenUtau.Core.Util {
             public bool ShowPrefs = true;
             public bool ShowTips = true;
             public bool MetronomeEnabled = false;
+            public bool Metronome = false;
             public int MetronomeVolume = 60;
+            public string UiFontPath = string.Empty;
+            public string UiFontFamily = string.Empty;
+            public bool UseUiFontForNotes = false;
             public int MetronomeHighFrequency = 2200;
             public int MetronomeLowFrequency = 1320;
             public string ThemeName = "Dark";
@@ -328,7 +332,10 @@ namespace OpenUtau.Core.Util {
             public string DefaultTrackColor = "Blue";
             public bool ClearCacheOnQuit = false;
             public bool PreRender = false;
+            public bool PlaySineWhenNoSinger = true;
             public bool UseModernPlayhead = true;
+            public bool ReduceAnimations = false;
+            public bool RenderStatusInTrackBar = true;
             public int NumRenderThreads = 2;
             public string DefaultRenderer = string.Empty;
             public int WorldlineR = 0;
@@ -703,7 +710,7 @@ errors.txt
                 }
                 RealTimePitchGeneration = false;
                 if (RealTimePitchMode < (int)LivePitchMode.Off
-                    || RealTimePitchMode > (int)LivePitchMode.SuperFast) {
+                    || RealTimePitchMode > (int)LivePitchMode.Fast) {
                     RealTimePitchMode = (int)LivePitchMode.Off;
                 }
             }

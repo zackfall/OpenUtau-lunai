@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Specialized;
 using System.Globalization;
 using System.IO;
@@ -21,29 +21,6 @@ using Serilog.Formatting;
 using Serilog.Formatting.Display;
 
 namespace OpenUtau.App.ViewModels {
-    public class LogEventConverter : IValueConverter {
-        private ITextFormatter formater;
-        private StringWriter stringWriter;
-        public LogEventConverter() {
-            const string template = "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}";
-            formater = new MessageTemplateTextFormatter(template);
-            stringWriter = new StringWriter();
-        }
-        public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture) {
-            if (value is LogEvent logEvent) {
-                formater.Format(logEvent, stringWriter);
-                // The template ends with a new line before the exception, which most events don't have.
-                string message = stringWriter.GetStringBuilder().ToString().TrimEnd();
-                stringWriter.GetStringBuilder().Clear();
-                return message;
-            }
-            return string.Empty;
-        }
-        public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) {
-            return new Avalonia.Data.BindingNotification(new NotImplementedException(), Avalonia.Data.BindingErrorType.Error);
-        }
-    }
-
     public partial class DeveloperViewModel : ViewModelBase {
 
         private DeveloperWindow? window;
@@ -155,8 +132,12 @@ namespace OpenUtau.App.ViewModels {
         public void Attach() {
             Core.Util.ProcessRunner.DebugSwitch = true;
             Sink.Inst.LevelSwitch.MinimumLevel = LogEventLevel.Verbose;
-            liveReloadSubscription = this.WhenAnyValue(x => x.LiveReload).Subscribe(SetWatching);
-            filterSubscription = this.WhenAnyValue(x => x.Filter, x => x.LogEventLevelIndex).Subscribe(_ => Refilter());
+            liveReloadSubscription = System.ObservableExtensions.Subscribe(
+                this.WhenAnyValue(x => x.LiveReload),
+                SetWatching);
+            filterSubscription = System.ObservableExtensions.Subscribe(
+                this.WhenAnyValue(x => x.Filter, x => x.LogEventLevelIndex),
+                _ => Refilter());
             Sink.Inst.LogEvents.CollectionChanged += OnSinkChanged;
         }
 
